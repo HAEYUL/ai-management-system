@@ -517,6 +517,9 @@ function Heading({
   );
 }
 function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(question:string,area:string)=>void;executionTasks:ExecutionTask[]}) {
+  const [passportStats,setPassportStats]=useState<PassportStats|null>(null);
+  const [passportLoading,setPassportLoading]=useState(true);
+  useEffect(()=>{let active=true;void supabase.auth.getSession().then(async({data})=>{if(!data.session){if(active)setPassportLoading(false);return}try{const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${data.session.access_token}`},cache:'no-store'});if(response.ok&&active)setPassportStats(await response.json() as PassportStats)}finally{if(active)setPassportLoading(false)}});return()=>{active=false}},[]);
   const statusOrder:Record<ExecutionTask['status'],number>={'결정 필요':0,'진행 중':1,'결과 확인':2,'완료':3};
   const openTasks=executionTasks.filter(task=>task.status!=='완료');
   const priorityTasks=[...openTasks].sort((a,b)=>statusOrder[a.status]-statusOrder[b.status]||a.due.localeCompare(b.due)).slice(0,3);
@@ -571,6 +574,14 @@ function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(q
             </button>
           ))}
       </div>
+      <section className="passport-insight">
+        <div>
+          <span className="eyebrow">전자여권 · 고객관계</span>
+          <h2>{passportLoading?'고객 통계를 확인하고 있습니다.':passportStats?'재방문 고객 현황':'전자여권 통계 로그인이 필요합니다.'}</h2>
+          <p>{passportStats?`전체 ${passportStats.summary.totalCustomers.toLocaleString('ko-KR')}명 중 재방문 고객 ${passportStats.summary.repeatCustomers.toLocaleString('ko-KR')}명 · VIP ${passportStats.summary.vipCount.toLocaleString('ko-KR')}명`:'관리의 계정·보안에서 로그인하면 고객관계 통계를 함께 확인합니다.'}</p>
+        </div>
+        {passportStats?<div className="passport-insight-values"><span>이번 달 신규 <b>{passportStats.summary.newCustomersThisMonth}명</b></span><span>60일 이상 미방문 <b>{passportStats.summary.longAbsent60Days}명</b></span></div>:<button onClick={()=>go('관리')} className="secondary-button">연결 확인</button>}
+      </section>
       <div className="dashboard-grid">
         <section className="decision-section">
           <div className="section-title">
@@ -676,6 +687,8 @@ function Diagnosis({
   recentQuestions: RecentQuestion[];
   setRecentQuestions: React.Dispatch<React.SetStateAction<RecentQuestion[]>>;
 }) {
+  const [passportStats,setPassportStats]=useState<PassportStats|null>(null);
+  useEffect(()=>{let active=true;void supabase.auth.getSession().then(async({data})=>{if(!data.session)return;const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${data.session.access_token}`},cache:'no-store'});if(response.ok&&active)setPassportStats(await response.json() as PassportStats)}).catch(()=>{});return()=>{active=false}},[]);
   const submitDiagnosis=()=>{const clean=question.trim();if(!clean)return;setRecentQuestions(current=>[{id:createId(),question:clean,store,area,createdAt:new Date().toISOString()},...current.filter(item=>!(item.question===clean&&item.store===store&&item.area===area))].slice(0,5));setSubmitted(true)};
   const recallQuestion=(item:RecentQuestion)=>{setQuestion(item.question);setStore(item.store);setArea(item.area)};
   const guide=diagnosisGuide[area] ?? diagnosisGuide.제품;
@@ -735,15 +748,15 @@ function Diagnosis({
                 주 단계 <b>{area}</b>
               </span>
               <span>
-                자료 기준 <b>연결 전</b>
+                자료 기준 <b>{area==='고객관계'&&passportStats?'전자여권 통계 연결':'확인 자료 기준'}</b>
               </span>
             </div>
           </div>
           <div className="result-grid">
             <article>
-              <span className="fact-label">실제 자료 연결 후 제공</span>
-              <h3>질문과 관련된 확인 자료를 먼저 찾습니다.</h3>
-              <p>매출·고객·운영 기록에서 확인된 사실만 이 영역에 표시합니다.</p>
+              <span className="fact-label">{area==='고객관계'&&passportStats?'전자여권 확인자료':'확인할 실제 자료'}</span>
+              <h3>{area==='고객관계'&&passportStats?`전체 ${passportStats.summary.totalCustomers}명 · 재방문 ${passportStats.summary.repeatCustomers}명 · VIP ${passportStats.summary.vipCount}명`:'질문과 관련된 확인 자료를 먼저 찾습니다.'}</h3>
+              <p>{area==='고객관계'&&passportStats?`이번 달 신규 ${passportStats.summary.newCustomersThisMonth}명, 60일 이상 미방문 ${passportStats.summary.longAbsent60Days}명입니다. 개인별 정보 없이 집계 수치만 사용합니다.`:'매출·고객·운영 기록에서 확인된 사실만 이 영역에 표시합니다.'}</p>
             </article>
             <article>
               <span className="ai-label">AI 연결 후 제공</span>
