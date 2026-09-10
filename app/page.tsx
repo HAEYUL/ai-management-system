@@ -110,6 +110,21 @@ type SessionSummary = {
 };
 type ExecutionTask = { id:string; title:string; store:string; area:string; due:string; owner:string; status:'결정 필요'|'진행 중'|'결과 확인'|'완료'; instruction:string; fieldNote:string };
 type RecentQuestion = { id:string; question:string; store:string; area:string; createdAt:string };
+type PassportStats = {
+  generatedAt: string;
+  summary: {
+    totalCustomers: number;
+    repeatCustomers: number;
+    newCustomersThisMonth: number;
+    vipCount: number;
+    rewardsIssuedThisMonth: number;
+    rewardsUsedThisMonth: number;
+    longAbsent60Days: number;
+  };
+  stores: { id:string; name:string; todayVisits:number; totalVisits:number; newCustomersThisMonth:number }[];
+};
+
+const passportStatsUrl = 'https://haeyul-passport.vercel.app/api/cron/management-stats';
 
 function createId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -3460,13 +3475,29 @@ function FormFooter({ saved }: { saved: boolean }) {
 }
 
 function PassportPanel({ toast }: { toast: (s: string) => void }) {
+  const [stats,setStats]=useState<PassportStats|null>(null);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState('');
+  const loadStats=async()=>{
+    setLoading(true);setError('');
+    const {data:{session}}=await supabase.auth.getSession();
+    if(!session){setLoading(false);setError('먼저 관리의 계정·보안에서 로그인해 주세요.');return}
+    try{
+      const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${session.access_token}`},cache:'no-store'});
+      if(!response.ok)throw new Error(response.status===401?'로그인 권한을 확인해 주세요.':'전자여권 통계를 불러오지 못했습니다.');
+      setStats(await response.json() as PassportStats);
+    }catch(cause){setError(cause instanceof Error?cause.message:'전자여권 통계를 불러오지 못했습니다.')}finally{setLoading(false)}
+  };
+  useEffect(()=>{void loadStats()},[]);
+  const summary=stats?.summary;
+  const giftRate=summary&&summary.rewardsIssuedThisMonth>0?`${Math.round(summary.rewardsUsedThisMonth/summary.rewardsIssuedThisMonth*100)}%`:'자료 없음';
   const metrics = [
-    '전체 가입자',
-    '신규 가입',
-    '재방문',
-    'VIP 고객',
-    '60일 이상 미방문',
-    '선물 사용률',
+    ['전체 가입자',summary?`${summary.totalCustomers.toLocaleString('ko-KR')}명`:'—'],
+    ['이번 달 신규',summary?`${summary.newCustomersThisMonth.toLocaleString('ko-KR')}명`:'—'],
+    ['재방문 고객',summary?`${summary.repeatCustomers.toLocaleString('ko-KR')}명`:'—'],
+    ['VIP 고객',summary?`${summary.vipCount.toLocaleString('ko-KR')}명`:'—'],
+    ['60일 이상 미방문',summary?`${summary.longAbsent60Days.toLocaleString('ko-KR')}명`:'—'],
+    ['이번 달 선물 사용률',giftRate],
   ];
   return (
     <>
@@ -3482,35 +3513,32 @@ function PassportPanel({ toast }: { toast: (s: string) => void }) {
           </div>
           <div>
             <span>현재 상태</span>
-            <h3>전자여권 연결 대기</h3>
-            <p>기존 전자여권의 운영과 데이터에는 손대지 않습니다.</p>
+            <h3>{loading?'전자여권 통계 확인 중':stats?'전자여권 연결됨':'전자여권 연결 확인 필요'}</h3>
+            <p>{error||'기존 전자여권 자료를 변경하지 않고 집계 통계만 읽습니다.'}</p>
           </div>
-          <span className="status amber">연결 대기</span>
+          <span className={`status ${stats?'green':'amber'}`}>{loading?'확인 중':stats?'연결됨':'확인 필요'}</span>
         </div>
         <dl>
           <div>
             <dt>연결 방식</dt>
-            <dd>아직 선택하지 않음</dd>
+            <dd>보호된 통계 API</dd>
           </div>
           <div>
             <dt>권장 순서</dt>
-            <dd>API → 읽기 전용 → 엑셀</dd>
+            <dd>오너 로그인 · 읽기 전용</dd>
           </div>
           <div>
             <dt>마지막 동기화</dt>
-            <dd>연결 후 표시</dd>
+            <dd>{stats?new Date(stats.generatedAt).toLocaleString('ko-KR'):'—'}</dd>
           </div>
         </dl>
         <div className="passport-actions">
           <button
             className="secondary-button"
-            onClick={() =>
-              toast(
-                '운영업체와 API 제공 여부를 확인한 뒤 연결 방식을 정합니다.',
-              )
-            }
+            disabled={loading}
+            onClick={()=>void loadStats().then(()=>toast('전자여권 통계 연결을 다시 확인했습니다.'))}
           >
-            연결 방식 확인
+            통계 새로고침
           </button>
           <button
             className="primary-button"
@@ -3525,10 +3553,10 @@ function PassportPanel({ toast }: { toast: (s: string) => void }) {
       </div>
       <div className="passport-metrics">
         {metrics.map((label) => (
-          <article className="passport-metric" key={label}>
-            <span>{label}</span>
-            <strong>연결 후 표시</strong>
-            <small>집계 통계만 사용</small>
+          <article className="passport-metric" key={label[0]}>
+            <span>{label[0]}</span>
+            <strong>{loading?'확인 중':label[1]}</strong>
+            <small>{stats?'전자여권 집계 기준':'집계 통계만 사용'}</small>
           </article>
         ))}
       </div>
