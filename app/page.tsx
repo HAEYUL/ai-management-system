@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import {
@@ -16,17 +17,20 @@ import {
   Clock3,
   Database,
   Download,
+  Eye,
   FileText,
   Gauge,
   Home,
   Lightbulb,
   Plus,
+  Search,
   Settings,
   Sparkles,
   Target,
   Trash2,
   Upload,
   Users,
+  X,
 } from 'lucide-react';
 
 declare global {
@@ -47,6 +51,31 @@ const navItems = [
   { label: '매출·고객', icon: ChartNoAxesCombined },
   { label: '매출성장 9단계', icon: Gauge },
 ];
+const storeOptions = ['해율푸드 전체', '해율만두전골', '곤드레밥집', '정담명가'] as const;
+type StoreScope = (typeof storeOptions)[number];
+type WorkspaceMember = {
+  id:string;
+  owner_id:string;
+  user_id:string|null;
+  email:string;
+  display_name:string;
+  role:'owner'|'manager'|'staff';
+  store_scope:StoreScope;
+  is_active:boolean;
+  created_at:string;
+};
+const roleMenus: Record<WorkspaceMember['role'], string[]> = {
+  owner: navItems.map(item => item.label),
+  manager: ['오늘','AI 진단','계획과 실행','매출·고객','매출성장 9단계'],
+  staff: ['오늘','계획과 실행'],
+};
+const roleNames: Record<WorkspaceMember['role'], string> = {
+  owner: '오너', manager: '매장 책임자', staff: '직원',
+};
+const viewPaths:Record<string,string>={'오늘':'/','AI 진단':'/diagnosis','계획과 실행':'/tasks','매출·고객':'/sales','매출성장 9단계':'/growth','관리':'/manage/store'};
+const managePaths:Record<string,string>={'매장 기본정보':'/manage/store','메뉴·가격':'/manage/menu','AI 운영원칙':'/manage/principles','백업·복원':'/manage/backup','해율 지식창고':'/manage/knowledge','전자여권 통계':'/manage/passport','변경 기록':'/manage/activity','계정·보안':'/manage/account'};
+const pathView=(path:string)=>path.startsWith('/manage')?'관리':Object.entries(viewPaths).find(([,value])=>value===path)?.[0]||'오늘';
+const pathManageSection=(path:string)=>Object.entries(managePaths).find(([,value])=>value===path)?.[0]||'매장 기본정보';
 const tasks = [
   {
     title: '가을 버섯 경험 행사',
@@ -108,8 +137,27 @@ type SessionSummary = {
     orders: number;
   }[];
 };
-type ExecutionTask = { id:string; title:string; store:string; area:string; due:string; owner:string; status:'결정 필요'|'진행 중'|'결과 확인'|'완료'; instruction:string; fieldNote:string };
+type ExecutionTask = {
+  id:string;
+  title:string;
+  store:string;
+  area:string;
+  due:string;
+  owner:string;
+  status:'결정 필요'|'진행 중'|'결과 확인'|'완료';
+  instruction:string;
+  fieldNote:string;
+  metricName?:string;
+  beforeValue?:string;
+  targetValue?:string;
+  afterValue?:string;
+  submittedAt?:string;
+  approvedAt?:string;
+  approvedBy?:string;
+  reviewNote?:string;
+};
 type RecentQuestion = { id:string; question:string; store:string; area:string; createdAt:string };
+type ManagementNotification = { id:string; taskId:string; tone:'amber'|'blue'|'red'; title:string; detail:string; createdAt:string };
 type PassportStats = {
   generatedAt: string;
   summary: {
@@ -160,7 +208,18 @@ function readFileAsArrayBuffer(file: File) {
   });
 }
 
-const cloudStorageKeys = ['haeyul-analysis-workspace-v1','haeyul-store-drafts-v1','haeyul-menu-drafts-v1','haeyul-principle-draft-v1'] as const;
+const cloudStorageKeys = ['haeyul-analysis-workspace-v1','haeyul-store-drafts-v1','haeyul-menu-drafts-v1','haeyul-principle-draft-v1','haeyul-audit-log-v1'] as const;
+type AuditLog={id:string;action:string;detail:string;actor:string;createdAt:string};
+const auditLogChangedEvent='haeyul-audit-log-changed';
+function appendAuditLog(action:string,detail:string,actor='오너'){
+  try{const current=JSON.parse(window.localStorage.getItem('haeyul-audit-log-v1')||'[]') as AuditLog[];const next=[{id:createId(),action,detail,actor,createdAt:new Date().toISOString()},...current].slice(0,300);window.localStorage.setItem('haeyul-audit-log-v1',JSON.stringify(next));window.dispatchEvent(new Event(auditLogChangedEvent));window.dispatchEvent(new Event(localDataChangedEvent))}catch{}
+  const storeName=storeOptions.slice(1).find(store=>detail.startsWith(store));
+  void supabase.from('workspace_activity_logs').insert({action,detail,actor,store_name:storeName||null}).then(()=>{});
+}
+
+type SharedTaskRow={id:string;owner_id:string;store_name:string;title:string;area:string;due_date:string|null;assignee_name:string;status:ExecutionTask['status'];instruction:string;field_note:string;metric_name:string;before_value:string;target_value:string;after_value:string;submitted_at:string|null;approved_at:string|null;approved_by:string;review_note:string;updated_at:string};
+const taskFromRow=(row:SharedTaskRow):ExecutionTask=>({id:row.id,title:row.title,store:row.store_name,area:row.area,due:row.due_date||'',owner:row.assignee_name,status:row.status,instruction:row.instruction,fieldNote:row.field_note,metricName:row.metric_name,beforeValue:row.before_value,targetValue:row.target_value,afterValue:row.after_value,submittedAt:row.submitted_at||'',approvedAt:row.approved_at||'',approvedBy:row.approved_by,reviewNote:row.review_note});
+const taskToRow=(task:ExecutionTask,ownerId:string)=>({id:task.id,owner_id:ownerId,store_name:task.store,store_id:null,title:task.title,area:task.area,due_date:task.due||null,assignee_name:task.owner,status:task.status,instruction:task.instruction,field_note:task.fieldNote,metric_name:task.metricName||'',before_value:task.beforeValue||'',target_value:task.targetValue||'',after_value:task.afterValue||'',submitted_at:task.submittedAt||null,approved_at:task.approvedAt||null,approved_by:task.approvedBy||'',review_note:task.reviewNote||''});
 type CloudSyncState = 'signed-out' | 'checking' | 'synced' | 'saving' | 'conflict' | 'error';
 const localDataChangedEvent = 'haeyul-local-data-changed';
 const cloudSyncRefreshEvent = 'haeyul-cloud-sync-refresh';
@@ -249,23 +308,57 @@ function CloudAutoSync() {
   return null;
 }
 
+function AccessGate({ status, user, member }: { status:'checking'|'signed-out'|'denied'|'ready'; user:User|null; member:WorkspaceMember|null }) {
+  const [email,setEmail]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [message,setMessage]=useState('');
+  const sendLoginLink=async()=>{
+    const clean=email.trim().toLowerCase();
+    if(!clean)return;
+    setBusy(true);setMessage('');
+    const {error}=await supabase.auth.signInWithOtp({email:clean,options:{emailRedirectTo:window.location.origin,shouldCreateUser:true}});
+    setBusy(false);
+    setMessage(error?'로그인 이메일을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.':'로그인 링크를 보냈습니다. 이메일에서 링크를 눌러 주세요.');
+  };
+  if(status==='checking')return <div className="access-screen"><div className="access-card compact"><div className="brand-mark">해</div><h1>접속 권한을 확인하고 있습니다</h1><p>잠시만 기다려 주세요.</p></div></div>;
+  if(status==='denied')return <div className="access-screen"><div className="access-card"><div className="brand-mark">해</div><span className="access-eyebrow">해율 AI 경영실</span><h1>{member&&!member.is_active?'사용이 중지된 계정입니다.':'등록되지 않은 계정입니다.'}</h1><p>{user?.email} 계정은 현재 경영실 사용 권한이 없습니다. 오너에게 직원 계정 등록 또는 사용 상태 확인을 요청해 주세요.</p><button className="secondary-button" onClick={()=>void supabase.auth.signOut()}>다른 계정으로 로그인</button></div></div>;
+  return <div className="access-screen"><div className="access-card"><div className="brand-mark">해</div><span className="access-eyebrow">해율 AI 경영실</span><h1>허용된 계정으로 로그인</h1><p>오너가 등록한 이메일로만 경영실에 접속할 수 있습니다.</p><label><span>이메일 주소</span><input type="email" value={email} onChange={event=>setEmail(event.target.value)} onKeyDown={event=>{if(event.key==='Enter')void sendLoginLink()}} placeholder="name@example.com" autoComplete="email"/></label><button className="primary-button" disabled={busy||!email.trim()} onClick={()=>void sendLoginLink()}>{busy?'보내는 중':'로그인 링크 받기'}</button>{message&&<div className="access-message">{message}</div>}<small>비밀번호 대신 이메일로 받은 안전한 로그인 링크를 사용합니다.</small></div></div>;
+}
+
 export default function HomePage() {
-  const [view, setView] = useState('오늘');
+  const router=useRouter();
+  const pathname=usePathname();
+  const [accessStatus,setAccessStatus]=useState<'checking'|'signed-out'|'denied'|'ready'>('checking');
+  const [accessUser,setAccessUser]=useState<User|null>(null);
+  const [currentMember,setCurrentMember]=useState<WorkspaceMember|null>(null);
+  const [view, setView] = useState(()=>pathView(pathname));
   const [question, setQuestion] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [notice, setNotice] = useState('');
-  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(
-    null,
-  );
+  const [salesSummaries, setSalesSummaries] = useState<SessionSummary[]>([]);
   const [adoptedTasks, setAdoptedTasks] = useState<string[]>([]);
   const [completedTasks, setCompletedTasks] = useState<string[]>([]);
   const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
   const [diagnosisStore, setDiagnosisStore] = useState('해율만두전골');
   const [diagnosisArea, setDiagnosisArea] = useState('제품');
   const [recentQuestions, setRecentQuestions] = useState<RecentQuestion[]>([]);
+  const [selectedStore, setSelectedStore] = useState<StoreScope>('해율푸드 전체');
+  const [selectedSalesMonth, setSelectedSalesMonth] = useState('');
+  const [readNotificationIds,setReadNotificationIds]=useState<string[]>([]);
+  const [focusedTaskId,setFocusedTaskId]=useState('');
+  const [manageSection,setManageSection]=useState(()=>pathManageSection(pathname));
   const [workspaceReady, setWorkspaceReady] = useState(false);
+  const sharedTasksReady=useRef(false);
+  const sharedTaskSaveTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const sharedTaskBaseline=useRef<Record<string,string>>({});
+  const allowedMenus=currentMember?roleMenus[currentMember.role]:[];
+  const isOwner=currentMember?.role==='owner';
+  const allowedStores:StoreScope[]=isOwner?[...storeOptions]:currentMember?[currentMember.store_scope]:[];
   const go = (name: string) => {
+    if(name==='관리'&&!isOwner){toast('관리 메뉴는 오너만 사용할 수 있습니다.');return}
+    if(name!=='관리'&&!allowedMenus.includes(name)){toast('현재 계정에 허용되지 않은 메뉴입니다.');return}
     setView(name);
+    router.push(viewPaths[name]||'/');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const toast = (text: string) => {
@@ -278,6 +371,32 @@ export default function HomePage() {
     setSubmitted(false);
     go('AI 진단');
   };
+  useEffect(()=>{
+    let active=true;
+    const resolveAccess=async(user:User|null)=>{
+      if(!active)return;
+      setAccessUser(user);setCurrentMember(null);
+      if(!user){setAccessStatus('signed-out');return}
+      setAccessStatus('checking');
+      const {data,error}=await supabase.from('workspace_members').select('id,owner_id,user_id,email,display_name,role,store_scope,is_active,created_at').eq('user_id',user.id).maybeSingle();
+      if(!active)return;
+      const member=!error&&data?data as WorkspaceMember:null;
+      setCurrentMember(member);
+      setAccessStatus(member?.is_active?'ready':'denied');
+    };
+    void supabase.auth.getUser().then(({data})=>resolveAccess(data.user));
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,session)=>{void resolveAccess(session?.user??null)});
+    return()=>{active=false;subscription.unsubscribe()};
+  },[]);
+  useEffect(()=>{setView(pathView(pathname));if(pathname.startsWith('/manage'))setManageSection(pathManageSection(pathname));window.scrollTo({top:0})},[pathname]);
+  useEffect(()=>{
+    if(!currentMember)return;
+    if(currentMember.role!=='owner'){
+      setSelectedStore(currentMember.store_scope);
+      setDiagnosisStore(currentMember.store_scope);
+    }
+    if((view==='관리'&&currentMember.role!=='owner')||(view!=='관리'&&!roleMenus[currentMember.role].includes(view))){setView('오늘');router.replace('/')}
+  },[currentMember,view,router]);
   useEffect(() => {
     const context = document.modelContext;
     if (!context?.registerTool) return;
@@ -320,20 +439,27 @@ export default function HomePage() {
       if (saved) {
         const parsed = JSON.parse(saved) as {
           sessionSummary?: SessionSummary | null;
+          salesSummaries?: SessionSummary[];
           adoptedTasks?: string[];
           completedTasks?: string[];
           executionTasks?: ExecutionTask[];
           diagnosisStore?: string;
           diagnosisArea?: string;
           recentQuestions?: RecentQuestion[];
+          selectedStore?: StoreScope;
+          selectedSalesMonth?: string;
+          readNotificationIds?:string[];
         };
-        if (parsed.sessionSummary) {
-          setSessionSummary({
-            ...parsed.sessionSummary,
-            daily: Array.isArray(parsed.sessionSummary.daily) ? parsed.sessionSummary.daily : [],
-            weekdays: Array.isArray(parsed.sessionSummary.weekdays) ? parsed.sessionSummary.weekdays : [],
-          });
-        }
+        const storedSummaries = Array.isArray(parsed.salesSummaries)
+          ? parsed.salesSummaries
+          : parsed.sessionSummary
+            ? [parsed.sessionSummary]
+            : [];
+        setSalesSummaries(storedSummaries.filter(item => item && typeof item.store === 'string' && typeof item.month === 'string').map(item => ({
+          ...item,
+          daily: Array.isArray(item.daily) ? item.daily : [],
+          weekdays: Array.isArray(item.weekdays) ? item.weekdays : [],
+        })));
         if (Array.isArray(parsed.adoptedTasks))
           setAdoptedTasks(parsed.adoptedTasks);
         if (Array.isArray(parsed.completedTasks))
@@ -346,6 +472,11 @@ export default function HomePage() {
           setDiagnosisArea(parsed.diagnosisArea);
         if (Array.isArray(parsed.recentQuestions))
           setRecentQuestions(parsed.recentQuestions.slice(0, 5));
+        if (storeOptions.includes(parsed.selectedStore as StoreScope))
+          setSelectedStore(parsed.selectedStore as StoreScope);
+        if (typeof parsed.selectedSalesMonth === 'string')
+          setSelectedSalesMonth(parsed.selectedSalesMonth);
+        if(Array.isArray(parsed.readNotificationIds))setReadNotificationIds(parsed.readNotificationIds.filter(id=>typeof id==='string').slice(-100));
       }
     } catch {
     } finally {
@@ -357,11 +488,68 @@ export default function HomePage() {
     try {
       window.localStorage.setItem(
         'haeyul-analysis-workspace-v1',
-        JSON.stringify({ sessionSummary, adoptedTasks, completedTasks, executionTasks, diagnosisStore, diagnosisArea, recentQuestions }),
+        JSON.stringify({ salesSummaries, adoptedTasks, completedTasks, executionTasks, diagnosisStore, diagnosisArea, recentQuestions, selectedStore, selectedSalesMonth, readNotificationIds }),
       );
       window.dispatchEvent(new Event(localDataChangedEvent));
     } catch {}
-  }, [workspaceReady, sessionSummary, adoptedTasks, completedTasks, executionTasks, diagnosisStore, diagnosisArea, recentQuestions]);
+  }, [workspaceReady, salesSummaries, adoptedTasks, completedTasks, executionTasks, diagnosisStore, diagnosisArea, recentQuestions, selectedStore, selectedSalesMonth, readNotificationIds]);
+  useEffect(()=>{
+    if(!workspaceReady||!currentMember)return;
+    let active=true;
+    const loadSharedTasks=async()=>{
+      const {data,error}=await supabase.from('execution_tasks').select('id,owner_id,store_name,title,area,due_date,assignee_name,status,instruction,field_note,metric_name,before_value,target_value,after_value,submitted_at,approved_at,approved_by,review_note,updated_at').order('updated_at',{ascending:false});
+      if(!active||error)return;
+      const rows=(data||[]) as SharedTaskRow[];
+      if(rows.length){const tasks=rows.map(taskFromRow);sharedTaskBaseline.current=Object.fromEntries(tasks.map(task=>[task.id,JSON.stringify(taskToRow(task,currentMember.owner_id))]));setExecutionTasks(tasks)}
+      else if(executionTasks.length&&currentMember.role==='owner'){const records=executionTasks.map(task=>taskToRow(task,currentMember.owner_id));const {error:importError}=await supabase.from('execution_tasks').upsert(records);if(!importError)sharedTaskBaseline.current=Object.fromEntries(records.map(record=>[record.id,JSON.stringify(record)]))}
+      sharedTasksReady.current=true;
+    };
+    void loadSharedTasks();
+    const channel=supabase.channel(`workspace-tasks-${currentMember.owner_id}`).on('postgres_changes',{event:'*',schema:'public',table:'execution_tasks'},()=>void loadSharedTasks()).subscribe();
+    return()=>{active=false;sharedTasksReady.current=false;if(sharedTaskSaveTimer.current)clearTimeout(sharedTaskSaveTimer.current);void supabase.removeChannel(channel)};
+  },[workspaceReady,currentMember]);
+  useEffect(()=>{
+    if(!sharedTasksReady.current||!currentMember)return;
+    if(sharedTaskSaveTimer.current)clearTimeout(sharedTaskSaveTimer.current);
+    sharedTaskSaveTimer.current=setTimeout(()=>{const records=executionTasks.map(task=>taskToRow(task,currentMember.owner_id));const changed=records.filter(record=>sharedTaskBaseline.current[record.id]!==JSON.stringify(record));if(!changed.length)return;void supabase.from('execution_tasks').upsert(changed).then(({error})=>{if(!error)for(const record of changed)sharedTaskBaseline.current[record.id]=JSON.stringify(record)})},500);
+    return()=>{if(sharedTaskSaveTimer.current)clearTimeout(sharedTaskSaveTimer.current)};
+  },[executionTasks,currentMember]);
+  const scopedTasks = selectedStore === '해율푸드 전체'
+    ? executionTasks
+    : executionTasks.filter(task => task.store === selectedStore);
+  const todayKey=new Date().toISOString().slice(0,10);
+  const notifications=scopedTasks.flatMap<ManagementNotification>(task=>{
+    if(task.status==='완료')return [];
+    if(isOwner&&task.status==='결과 확인')return [{id:`${task.id}:review:${task.submittedAt||''}`,taskId:task.id,tone:'amber' as const,title:'결과 확인 요청',detail:`${task.store} · ${task.title}`,createdAt:task.submittedAt||todayKey}];
+    if(!isOwner&&task.reviewNote)return [{id:`${task.id}:return:${task.reviewNote}`,taskId:task.id,tone:'red' as const,title:'보완 요청 도착',detail:`${task.title} · ${task.reviewNote}`,createdAt:todayKey}];
+    if(task.due){const days=Math.ceil((new Date(`${task.due}T23:59:59`).getTime()-Date.now())/86400000);if(days<0)return [{id:`${task.id}:overdue:${task.due}`,taskId:task.id,tone:'red' as const,title:'기한이 지났습니다',detail:`${task.store} · ${task.title}`,createdAt:task.due}];if(days<=3)return [{id:`${task.id}:due:${task.due}`,taskId:task.id,tone:'blue' as const,title:days===0?'오늘 마감 과제':`${days}일 후 마감`,detail:`${task.store} · ${task.title}`,createdAt:task.due}]}
+    return [];
+  });
+  const unreadNotificationCount=notifications.filter(item=>!readNotificationIds.includes(item.id)).length;
+  const openNotification=(notification:ManagementNotification)=>{setReadNotificationIds(current=>current.includes(notification.id)?current:[...current,notification.id].slice(-100));setFocusedTaskId(notification.taskId);go('계획과 실행')};
+  const openManage=(section='매장 기본정보')=>{if(!isOwner){toast('관리 메뉴는 오너만 사용할 수 있습니다.');return}setManageSection(section);setView('관리');router.push(managePaths[section]||viewPaths['관리']);window.scrollTo({top:0,behavior:'smooth'})};
+  const markAllNotificationsRead=()=>setReadNotificationIds(current=>[...new Set([...current,...notifications.map(item=>item.id)])].slice(-100));
+  const summariesInScope = selectedStore === '해율푸드 전체'
+    ? salesSummaries
+    : salesSummaries.filter(summary => summary.store === selectedStore);
+  const sortedSummariesInScope = [...summariesInScope].sort((a, b) => b.month.localeCompare(a.month) || a.store.localeCompare(b.store));
+  const scopedSessionSummary = sortedSummariesInScope.find(summary => `${summary.store}|${summary.month}` === selectedSalesMonth) ?? sortedSummariesInScope[0] ?? null;
+  const saveSessionSummary = (summary: SessionSummary) => {
+    setSalesSummaries(current => [
+      ...current.filter(item => !(item.store === summary.store && item.month === summary.month)),
+      summary,
+    ]);
+    setSelectedSalesMonth(`${summary.store}|${summary.month}`);
+  };
+  const changeStore = (store: StoreScope) => {
+    if(!allowedStores.includes(store)){toast('담당 매장만 선택할 수 있습니다.');return}
+    setSelectedStore(store);
+    setSelectedSalesMonth('');
+    if (store !== '해율푸드 전체') setDiagnosisStore(store);
+    toast(`${store} 기준으로 화면을 변경했습니다.`);
+  };
+  if(accessStatus!=='ready'||!currentMember)return <AccessGate status={accessStatus} user={accessUser} member={currentMember}/>;
+  const visibleNavItems=navItems.filter(item=>allowedMenus.includes(item.label));
   return (
     <div className="app-shell">
       <CloudAutoSync />
@@ -374,7 +562,7 @@ export default function HomePage() {
           </div>
         </div>
         <nav aria-label="주요 메뉴">
-          {navItems.map(({ label, icon: Icon }) => (
+          {visibleNavItems.map(({ label, icon: Icon }) => (
             <button
               onClick={() => go(label)}
               className={`nav-item ${view === label ? 'active' : ''}`}
@@ -386,26 +574,26 @@ export default function HomePage() {
           ))}
         </nav>
         <div className="sidebar-foot">
-          <button
+          {isOwner&&<button
             onClick={() => go('관리')}
             className={`nav-item ${view === '관리' ? 'active' : ''}`}
           >
             <Settings size={20} />
             <span>관리</span>
-          </button>
+          </button>}
           <div className="owner">
-            <span>JB</span>
+            <span>{currentMember.display_name.slice(0,2)||'해율'}</span>
             <div>
-              <strong>제이비</strong>
-              <small>오너 계정</small>
+              <strong>{currentMember.display_name}</strong>
+              <small>{roleNames[currentMember.role]} · {currentMember.store_scope}</small>
             </div>
           </div>
         </div>
       </aside>
       <main>
-        <Header sessionSummary={sessionSummary} />
+        <Header sessionSummary={scopedSessionSummary} selectedStore={selectedStore} setSelectedStore={changeStore} storeChoices={allowedStores} notifications={notifications} unreadCount={unreadNotificationCount} readIds={readNotificationIds} onNotificationOpen={openNotification} onMarkAllRead={markAllNotificationsRead} />
         {view === '오늘' ? (
-          <Today go={go} startQuick={startQuick} executionTasks={executionTasks} />
+          <Today go={go} openManage={openManage} startQuick={startQuick} executionTasks={scopedTasks} salesSummaries={summariesInScope} selectedStore={selectedStore} canUseAi={currentMember.role!=='staff'} />
         ) : view === 'AI 진단' ? (
           <Diagnosis
             question={question}
@@ -421,34 +609,47 @@ export default function HomePage() {
             setArea={setDiagnosisArea}
             recentQuestions={recentQuestions}
             setRecentQuestions={setRecentQuestions}
+            selectedStore={selectedStore}
           />
         ) : view === '계획과 실행' ? (
           <Plans
             toast={toast}
-            sessionSummary={sessionSummary}
-            adoptedTasks={adoptedTasks}
-            completedTasks={completedTasks}
+            sessionSummary={scopedSessionSummary}
+            adoptedTasks={scopedSessionSummary ? adoptedTasks : []}
+            completedTasks={scopedSessionSummary ? completedTasks : []}
             setCompletedTasks={setCompletedTasks}
+            selectedStore={selectedStore}
             executionTasks={executionTasks}
             setExecutionTasks={setExecutionTasks}
+            role={currentMember.role}
+            actorName={currentMember.display_name}
+            workspaceOwnerId={currentMember.owner_id}
+            focusedTaskId={focusedTaskId}
+            onTaskFocused={()=>setFocusedTaskId('')}
           />
         ) : view === '매출·고객' ? (
           <Sales
             toast={toast}
-            sessionSummary={sessionSummary}
-            setSessionSummary={setSessionSummary}
+            sessionSummary={scopedSessionSummary}
+            saveSessionSummary={saveSessionSummary}
+            salesSummaries={salesSummaries}
+            availableSummaries={sortedSummariesInScope}
+            selectedSalesMonth={scopedSessionSummary?.month ?? ''}
+            setSelectedSalesMonth={setSelectedSalesMonth}
             adoptedTasks={adoptedTasks}
             setAdoptedTasks={setAdoptedTasks}
             setCompletedTasks={setCompletedTasks}
+            selectedStore={selectedStore}
+            openManage={openManage}
           />
         ) : view === '매출성장 9단계' ? (
-          <Stages go={go} executionTasks={executionTasks} sessionSummary={sessionSummary} />
+          <Stages go={go} executionTasks={scopedTasks} sessionSummary={scopedSessionSummary} selectedStore={selectedStore} />
         ) : (
-          <Manage toast={toast} />
+          <Manage toast={toast} requestedSection={manageSection} onSectionChange={section=>{setManageSection(section);router.push(managePaths[section]||viewPaths['관리'])}} />
         )}
       </main>
       <nav className="mobile-nav">
-        {navItems.map(({ label, icon: Icon }) => (
+        {visibleNavItems.map(({ label, icon: Icon }) => (
           <button
             onClick={() => go(label)}
             className={view === label ? 'active' : ''}
@@ -458,13 +659,13 @@ export default function HomePage() {
             <span>{label.replace('매출성장 ', '')}</span>
           </button>
         ))}
-        <button
+        {isOwner&&<button
           onClick={() => go('관리')}
           className={view === '관리' ? 'active' : ''}
         >
           <Settings size={20} />
           <span>관리</span>
-        </button>
+        </button>}
       </nav>
       {notice && (
         <div className="toast">
@@ -476,20 +677,32 @@ export default function HomePage() {
   );
 }
 
-function Header({ sessionSummary }: { sessionSummary: SessionSummary | null }) {
+function Header({ sessionSummary, selectedStore, setSelectedStore, storeChoices, notifications, unreadCount, readIds, onNotificationOpen, onMarkAllRead }: { sessionSummary: SessionSummary | null; selectedStore: StoreScope; setSelectedStore: (store: StoreScope) => void; storeChoices:StoreScope[]; notifications:ManagementNotification[]; unreadCount:number; readIds:string[]; onNotificationOpen:(notification:ManagementNotification)=>void; onMarkAllRead:()=>void }) {
+  const [open,setOpen]=useState(false);
   return (
     <header className="topbar">
-      <button className="store-select">
+      <label className="store-select">
         <span className="store-dot" />
-        해율푸드 전체
+        <select aria-label="조회할 매장 선택" value={selectedStore} onChange={event => setSelectedStore(event.target.value as StoreScope)}>
+          {storeChoices.map(store => <option key={store}>{store}</option>)}
+        </select>
         <ChevronDown size={16} />
-      </button>
+      </label>
       <div className="top-actions">
-        <span className="data-date">{sessionSummary ? `${sessionSummary.store} · ${sessionSummary.month} 자료` : '매출자료 연결 전'}</span>
-        <button className="icon-button" aria-label="알림">
-          <Bell size={20} />
-          <i />
-        </button>
+        <span className="data-date">{sessionSummary ? `${sessionSummary.store} · ${sessionSummary.month} 자료` : `${selectedStore} · 매출자료 없음`}</span>
+        <div className="notification-wrap">
+          <button className="icon-button" aria-label={`알림 ${unreadCount}개`} aria-expanded={open} onClick={()=>setOpen(value=>!value)}>
+            <Bell size={20} />
+            {unreadCount>0&&<><i/><b>{unreadCount>9?'9+':unreadCount}</b></>}
+          </button>
+          {open&&<section className="notification-panel">
+            <div className="notification-head"><div><strong>알림센터</strong><span>확인이 필요한 현장 과제</span></div>{unreadCount>0&&<button onClick={onMarkAllRead}>모두 읽음</button>}</div>
+            <div className="notification-list">
+              {notifications.map(item=><button key={item.id} className={readIds.includes(item.id)?'read':''} onClick={()=>{onNotificationOpen(item);setOpen(false)}}><span className={`notification-dot ${item.tone}`}/><span><strong>{item.title}</strong><small>{item.detail}</small></span><ArrowRight size={15}/></button>)}
+              {!notifications.length&&<div className="notification-empty"><CircleCheck size={26}/><strong>확인할 알림이 없습니다.</strong><span>새 요청이나 기한 임박 과제가 여기에 표시됩니다.</span></div>}
+            </div>
+          </section>}
+        </div>
       </div>
     </header>
   );
@@ -516,13 +729,20 @@ function Heading({
     </section>
   );
 }
-function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(question:string,area:string)=>void;executionTasks:ExecutionTask[]}) {
+function Today({go,openManage,startQuick,executionTasks,salesSummaries,selectedStore,canUseAi}:{go:(v:string)=>void;openManage:(section?:string)=>void;startQuick:(question:string,area:string)=>void;executionTasks:ExecutionTask[];salesSummaries:SessionSummary[];selectedStore:StoreScope;canUseAi:boolean}) {
   const [passportStats,setPassportStats]=useState<PassportStats|null>(null);
   const [passportLoading,setPassportLoading]=useState(true);
   useEffect(()=>{let active=true;void supabase.auth.getSession().then(async({data})=>{if(!data.session){if(active)setPassportLoading(false);return}try{const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${data.session.access_token}`},cache:'no-store'});if(response.ok&&active)setPassportStats(await response.json() as PassportStats)}finally{if(active)setPassportLoading(false)}});return()=>{active=false}},[]);
   const statusOrder:Record<ExecutionTask['status'],number>={'결정 필요':0,'진행 중':1,'결과 확인':2,'완료':3};
   const openTasks=executionTasks.filter(task=>task.status!=='완료');
-  const priorityTasks=[...openTasks].sort((a,b)=>statusOrder[a.status]-statusOrder[b.status]||a.due.localeCompare(b.due)).slice(0,3);
+  const todayDate=new Date();todayDate.setHours(0,0,0,0);
+  const todayKey=[todayDate.getFullYear(),String(todayDate.getMonth()+1).padStart(2,'0'),String(todayDate.getDate()).padStart(2,'0')].join('-');
+  const dueDays=(task:ExecutionTask)=>task.due?Math.round((new Date(`${task.due}T00:00:00`).getTime()-todayDate.getTime())/86400000):9999;
+  const overdueTasks=openTasks.filter(task=>dueDays(task)<0);
+  const todayTasks=openTasks.filter(task=>dueDays(task)===0);
+  const weekTasks=openTasks.filter(task=>dueDays(task)>0&&dueDays(task)<=7);
+  const recentlyCompleted=executionTasks.filter(task=>task.status==='완료'&&task.approvedAt&&Date.now()-new Date(task.approvedAt).getTime()<=7*86400000);
+  const priorityTasks=[...openTasks].sort((a,b)=>dueDays(a)-dueDays(b)||statusOrder[a.status]-statusOrder[b.status]).slice(0,3);
   const focus=priorityTasks[0];
   const tone=(status:ExecutionTask['status'])=>status==='결정 필요'?'amber':status==='결과 확인'?'blue':'green';
   const taskCounts={
@@ -531,21 +751,34 @@ function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(q
     review:executionTasks.filter(task=>task.status==='결과 확인').length,
     completed:executionTasks.filter(task=>task.status==='완료').length,
   };
+  const passportStore = selectedStore === '해율푸드 전체' ? null : passportStats?.stores.find(item => item.name === selectedStore);
+  const reportStores=(selectedStore==='해율푸드 전체'?storeOptions.slice(1):[selectedStore]).map(store=>{const storeTasks=executionTasks.filter(task=>task.store===store);const latest=[...salesSummaries].filter(summary=>summary.store===store).sort((a,b)=>b.month.localeCompare(a.month))[0];const customer=passportStats?.stores.find(item=>item.name===store);return {store,open:storeTasks.filter(task=>task.status!=='완료').length,overdue:storeTasks.filter(task=>task.status!=='완료'&&dueDays(task)<0).length,review:storeTasks.filter(task=>task.status==='결과 확인').length,completed:storeTasks.filter(task=>task.status==='완료').length,sales:latest?.totalSales??null,salesMonth:latest?.month??'',visits:customer?.totalVisits??null}});
+  const downloadStoreReport=()=>{const headers=['매장','진행 과제','기한 초과','결과 확인','완료','최근 기준월','최근 매출','전자여권 누적 방문'];const rows=reportStores.map(item=>[item.store,item.open,item.overdue,item.review,item.completed,item.salesMonth,item.sales??'',item.visits??'']);const csv='\uFEFF'+[headers,...rows].map(row=>row.map(value=>`"${String(value).replaceAll('"','""')}"`).join(',')).join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`해율_매장운영보고서_${todayKey}.csv`;link.click();URL.revokeObjectURL(url)};
   return (
     <div className="page-wrap">
       <Heading
         eyebrow="오늘 · 안전하게 저장"
         title="오늘의 경영실"
         copy="결정할 일, 실행 중인 일, 결과 확인 순서로 오늘 업무를 정리합니다."
-        action={
+        action={canUseAi?
           <button onClick={() => go('AI 진단')} className="primary-button">
             <Sparkles size={18} />
             <b>AI 진단 시작</b>
-          </button>
+          </button>:undefined
         }
       />
       <div className="prototype-notice"><span>자동 저장</span><p>변경 내용은 먼저 이 기기에 저장되고, 로그인 상태에서는 Supabase에도 자동으로 동기화됩니다.</p></div>
-      <section className="ask-panel">
+      <section className="today-briefing">
+        <div className="briefing-head"><div><span>{todayKey} · {selectedStore}</span><h2>오늘 업무 요약</h2></div><button onClick={()=>go('계획과 실행')}>일정 전체 보기 <ArrowRight size={15}/></button></div>
+        <div className="briefing-metrics">
+          <article className={overdueTasks.length?'danger':''}><span>기한 초과</span><strong>{overdueTasks.length}개</strong><small>{overdueTasks.length?'가장 먼저 확인':'지연 과제 없음'}</small></article>
+          <article><span>오늘 마감</span><strong>{todayTasks.length}개</strong><small>오늘 안에 처리</small></article>
+          <article><span>결과 확인</span><strong>{taskCounts.review}개</strong><small>오너 검토 대기</small></article>
+          <article><span>최근 7일 완료</span><strong>{recentlyCompleted.length}개</strong><small>승인 완료 기준</small></article>
+        </div>
+        <div className="briefing-line"><Clock3 size={17}/><span>{overdueTasks.length?`기한이 지난 “${overdueTasks[0].title}”부터 확인하세요.`:todayTasks.length?`오늘 마감 과제 ${todayTasks.length}개를 먼저 처리하세요.`:weekTasks.length?`7일 이내 과제 ${weekTasks.length}개가 예정되어 있습니다.`:'긴급한 기한 과제가 없습니다.'}</span></div>
+      </section>
+      {canUseAi&&<><section className="ask-panel">
         <div className="ask-icon">
           <Bot size={22} />
         </div>
@@ -573,14 +806,14 @@ function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(q
               {label}
             </button>
           ))}
-      </div>
+      </div></>}
       <section className="passport-insight">
         <div>
           <span className="eyebrow">전자여권 · 고객관계</span>
-          <h2>{passportLoading?'고객 통계를 확인하고 있습니다.':passportStats?'재방문 고객 현황':'전자여권 통계 로그인이 필요합니다.'}</h2>
-          <p>{passportStats?`전체 ${passportStats.summary.totalCustomers.toLocaleString('ko-KR')}명 중 재방문 고객 ${passportStats.summary.repeatCustomers.toLocaleString('ko-KR')}명 · VIP ${passportStats.summary.vipCount.toLocaleString('ko-KR')}명`:'관리의 계정·보안에서 로그인하면 고객관계 통계를 함께 확인합니다.'}</p>
+          <h2>{passportLoading?'고객 통계를 확인하고 있습니다.':passportStats?`${selectedStore} 고객 현황`:'전자여권 통계 로그인이 필요합니다.'}</h2>
+          <p>{passportStore?`누적 방문 ${passportStore.totalVisits.toLocaleString('ko-KR')}회 · 오늘 방문 ${passportStore.todayVisits.toLocaleString('ko-KR')}회`:passportStats?`전체 ${passportStats.summary.totalCustomers.toLocaleString('ko-KR')}명 중 재방문 고객 ${passportStats.summary.repeatCustomers.toLocaleString('ko-KR')}명 · VIP ${passportStats.summary.vipCount.toLocaleString('ko-KR')}명`:'관리의 계정·보안에서 로그인하면 고객관계 통계를 함께 확인합니다.'}</p>
         </div>
-        {passportStats?<div className="passport-insight-values"><span>이번 달 신규 <b>{passportStats.summary.newCustomersThisMonth}명</b></span><span>60일 이상 미방문 <b>{passportStats.summary.longAbsent60Days}명</b></span></div>:<button onClick={()=>go('관리')} className="secondary-button">연결 확인</button>}
+        {passportStats?<div className="passport-insight-values"><span>이번 달 신규 <b>{passportStore?.newCustomersThisMonth ?? passportStats.summary.newCustomersThisMonth}명</b></span><span>{passportStore?'누적 방문':'60일 이상 미방문'} <b>{passportStore?`${passportStore.totalVisits}회`:`${passportStats.summary.longAbsent60Days}명`}</b></span></div>:<button onClick={()=>openManage('전자여권 통계')} className="secondary-button">연결 확인</button>}
       </section>
       <div className="dashboard-grid">
         <section className="decision-section">
@@ -654,6 +887,10 @@ function Today({go,startQuick,executionTasks}:{go:(v:string)=>void;startQuick:(q
           </button>
         ))}
       </section>
+      <section className="store-operations-report">
+        <div className="section-title"><div><h2>매장별 운영 보고서</h2><span>과제 진행, 기한, 최근 매출과 고객 방문 자료를 한 번에 확인합니다.</span></div><button onClick={downloadStoreReport}><Download size={16}/>보고서 내려받기</button></div>
+        <div className="operations-table"><div className="operations-row operations-header"><span>매장</span><span>진행</span><span>기한 초과</span><span>확인 대기</span><span>완료</span><span>최근 매출</span><span>누적 방문</span></div>{reportStores.map(item=><div className="operations-row" key={item.store}><strong>{item.store}</strong><span>{item.open}개</span><span className={item.overdue?'danger':''}>{item.overdue}개</span><span>{item.review}개</span><span>{item.completed}개</span><span>{item.sales===null?'자료 없음':`${item.sales.toLocaleString('ko-KR')}원`}<small>{item.salesMonth}</small></span><span>{item.visits===null?'연결 자료 없음':`${item.visits.toLocaleString('ko-KR')}회`}</span></div>)}</div>
+      </section>
     </div>
   );
 }
@@ -672,6 +909,7 @@ function Diagnosis({
   setArea,
   recentQuestions,
   setRecentQuestions,
+  selectedStore,
 }: {
   question: string;
   setQuestion: (v: string) => void;
@@ -686,13 +924,20 @@ function Diagnosis({
   setArea: (v:string) => void;
   recentQuestions: RecentQuestion[];
   setRecentQuestions: React.Dispatch<React.SetStateAction<RecentQuestion[]>>;
+  selectedStore: StoreScope;
 }) {
   const [passportStats,setPassportStats]=useState<PassportStats|null>(null);
   useEffect(()=>{let active=true;void supabase.auth.getSession().then(async({data})=>{if(!data.session)return;const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${data.session.access_token}`},cache:'no-store'});if(response.ok&&active)setPassportStats(await response.json() as PassportStats)}).catch(()=>{});return()=>{active=false}},[]);
   const submitDiagnosis=()=>{const clean=question.trim();if(!clean)return;setRecentQuestions(current=>[{id:createId(),question:clean,store,area,createdAt:new Date().toISOString()},...current.filter(item=>!(item.question===clean&&item.store===store&&item.area===area))].slice(0,5));setSubmitted(true)};
   const recallQuestion=(item:RecentQuestion)=>{setQuestion(item.question);setStore(item.store);setArea(item.area)};
   const guide=diagnosisGuide[area] ?? diagnosisGuide.제품;
-  const makeTask=()=>{const title=question.trim().replace(/[?.!]$/,'').slice(0,48);setExecutionTasks(current=>[{id:createId(),title,store,area,due:'',owner:'오너',status:'결정 필요',instruction:`질문: ${question.trim()}\n확인할 사실: ${guide.facts.join(' / ')}\n확인 지표: ${guide.metric}`,fieldNote:''},...current]);toast('진단 준비표를 검토용 과제로 전환했습니다.');go('계획과 실행')};
+  useEffect(() => {
+    if (selectedStore !== '해율푸드 전체' && store !== selectedStore) {
+      setStore(selectedStore);
+      setSubmitted(false);
+    }
+  }, [selectedStore, setStore, setSubmitted, store]);
+  const makeTask=()=>{const title=question.trim().replace(/[?.!]$/,'').slice(0,48);setExecutionTasks(current=>[{id:createId(),title,store,area,due:'',owner:'오너',status:'결정 필요',instruction:`질문: ${question.trim()}\n확인할 사실: ${guide.facts.join(' / ')}`,fieldNote:'',metricName:guide.metric,beforeValue:'',targetValue:'',afterValue:''},...current]);toast('진단 준비표를 검토용 과제로 전환했습니다.');go('계획과 실행')};
   return (
     <div className="page-wrap narrow">
       <Heading
@@ -814,6 +1059,41 @@ function Diagnosis({
   );
 }
 
+function TaskPerformance({tasks}:{tasks:ExecutionTask[]}){
+  const completed=tasks.filter(task=>task.status==='완료').sort((a,b)=>(b.approvedAt||'').localeCompare(a.approvedAt||''));
+  const numeric=(value?:string)=>{if(!value)return null;const match=value.replaceAll(',','').match(/-?\d+(?:\.\d+)?/);return match?Number(match[0]):null};
+  const measured=completed.map(task=>({...task,targetNumber:numeric(task.targetValue),afterNumber:numeric(task.afterValue)})).filter(task=>task.targetNumber!==null&&task.afterNumber!==null);
+  const achieved=measured.filter(task=>(task.afterNumber as number)>=(task.targetNumber as number));
+  const rate=measured.length?Math.round(achieved.length/measured.length*100):null;
+  return <section className="task-performance">
+    <div className="section-title"><div><h2>완료 과제 성과</h2><span>오너가 승인한 과제의 목표와 실제 결과를 비교합니다.</span></div><span className="draft-count">누적 {completed.length}개</span></div>
+    <div className="performance-summary"><article><span>승인 완료</span><strong>{completed.length}개</strong><small>현재 선택 매장 기준</small></article><article><span>수치 비교 가능</span><strong>{measured.length}개</strong><small>목표·실행 후 입력 과제</small></article><article><span>목표 달성</span><strong>{achieved.length}개</strong><small>실행 후 ≥ 목표</small></article><article><span>목표 달성률</span><strong>{rate===null?'자료 없음':`${rate}%`}</strong><small>비교 가능한 과제 기준</small></article></div>
+    {completed.length?<div className="performance-history">{completed.slice(0,6).map(task=>{const target=numeric(task.targetValue);const after=numeric(task.afterValue);const hasResult=target!==null&&after!==null;const success=hasResult&&(after as number)>=(target as number);return <article key={task.id}><span className={`performance-state ${!hasResult?'neutral':success?'success':'miss'}`}>{!hasResult?'기록 완료':success?'목표 달성':'목표 미달'}</span><div><strong>{task.title}</strong><small>{task.store} · {task.metricName||'확인 지표 미입력'} · {task.approvedAt?new Date(task.approvedAt).toLocaleDateString('ko-KR'):'승인일 미기록'}</small></div><div className="performance-values"><span>목표 <b>{task.targetValue||'—'}</b></span><ArrowRight size={14}/><span>결과 <b>{task.afterValue||'—'}</b></span></div></article>})}</div>:<div className="schedule-empty"><CircleCheck size={22}/><span>아직 오너가 승인한 완료 과제가 없습니다.</span></div>}
+  </section>;
+}
+
+function TaskSchedule({tasks,onSelect}:{tasks:ExecutionTask[];onSelect:(task:ExecutionTask)=>void}){
+  const [period,setPeriod]=useState<'all'|'overdue'|'today'|'week'|'undated'>('all');
+  const today=new Date();today.setHours(0,0,0,0);
+  const dayMs=86400000;
+  const classify=(task:ExecutionTask)=>{
+    if(!task.due)return 'undated' as const;
+    const due=new Date(`${task.due}T00:00:00`);const days=Math.round((due.getTime()-today.getTime())/dayMs);
+    if(days<0)return 'overdue' as const;if(days===0)return 'today' as const;if(days<=7)return 'week' as const;return 'later' as const;
+  };
+  const activeTasks=tasks.filter(task=>task.status!=='완료');
+  const counts={overdue:activeTasks.filter(task=>classify(task)==='overdue').length,today:activeTasks.filter(task=>classify(task)==='today').length,week:activeTasks.filter(task=>classify(task)==='week').length,undated:activeTasks.filter(task=>classify(task)==='undated').length};
+  const visible=activeTasks.filter(task=>period==='all'||classify(task)===period).sort((a,b)=>(a.due||'9999').localeCompare(b.due||'9999'));
+  const dateLabel=(task:ExecutionTask)=>{const kind=classify(task);if(kind==='undated')return '기한 미정';if(kind==='today')return '오늘 마감';if(kind==='overdue')return `${Math.abs(Math.round((new Date(`${task.due}T00:00:00`).getTime()-today.getTime())/dayMs))}일 지남`;return new Date(`${task.due}T00:00:00`).toLocaleDateString('ko-KR',{month:'short',day:'numeric',weekday:'short'})};
+  return <section className="task-schedule">
+    <div className="section-title"><div><h2>과제 일정표</h2><span>오늘 처리할 일과 기한이 지난 일을 먼저 확인합니다.</span></div><span className="draft-count">진행 과제 {activeTasks.length}개</span></div>
+    <div className="schedule-summary">
+      {([['overdue','기한 초과',counts.overdue,'red'],['today','오늘 마감',counts.today,'amber'],['week','7일 이내',counts.week,'blue'],['undated','기한 미정',counts.undated,'gray']] as const).map(([key,label,count,tone])=><button key={key} className={`${period===key?'active ':''}${tone}`} onClick={()=>setPeriod(period===key?'all':key)}><span>{label}</span><strong>{count}개</strong></button>)}
+    </div>
+    {visible.length>0?<div className="schedule-list">{visible.slice(0,8).map(task=><button key={task.id} onClick={()=>onSelect(task)}><span className={`schedule-date ${classify(task)}`}>{dateLabel(task)}</span><span><strong>{task.title}</strong><small>{task.store} · {task.owner} · {task.status}</small></span><ArrowRight size={16}/></button>)}</div>:<div className="schedule-empty"><CircleCheck size={22}/><span>선택한 기간에 처리할 과제가 없습니다.</span></div>}
+  </section>;
+}
+
 function Plans({
   toast,
   sessionSummary,
@@ -822,6 +1102,12 @@ function Plans({
   setCompletedTasks,
   executionTasks,
   setExecutionTasks,
+  selectedStore,
+  role,
+  actorName,
+  workspaceOwnerId,
+  focusedTaskId,
+  onTaskFocused,
 }: {
   toast: (s: string) => void;
   sessionSummary: SessionSummary | null;
@@ -830,41 +1116,94 @@ function Plans({
   setCompletedTasks: React.Dispatch<React.SetStateAction<string[]>>;
   executionTasks: ExecutionTask[];
   setExecutionTasks: React.Dispatch<React.SetStateAction<ExecutionTask[]>>;
+  selectedStore: StoreScope;
+  role: WorkspaceMember['role'];
+  actorName:string;
+  workspaceOwnerId:string;
+  focusedTaskId:string;
+  onTaskFocused:()=>void;
 }) {
+  const canManage=role!=='staff';
+  const isOwner=role==='owner';
   const [showCreate,setShowCreate]=useState(false);
   const [taskQuery,setTaskQuery]=useState('');
   const [taskStore,setTaskStore]=useState('전체 매장');
   const [taskStatus,setTaskStatus]=useState('전체 상태');
-  const [newTask,setNewTask]=useState({title:'',store:'해율만두전골',area:'제품',due:'',owner:'오너',instruction:''});
-  const addTask=()=>{if(!newTask.title.trim())return;setExecutionTasks(current=>[{id:createId(),...newTask,title:newTask.title.trim(),status:'결정 필요',fieldNote:''},...current]);setNewTask({title:'',store:'해율만두전골',area:'제품',due:'',owner:'오너',instruction:''});setShowCreate(false);toast('새 과제를 저장했습니다.')};
-  const updateTask=(id:string,changes:Partial<ExecutionTask>)=>setExecutionTasks(current=>current.map(task=>task.id===id?{...task,...changes}:task));
-  const visibleTasks=executionTasks.filter(task=>{const query=taskQuery.trim().toLowerCase();const matchesQuery=!query||[task.title,task.store,task.area,task.owner,task.instruction,task.fieldNote].some(value=>value.toLowerCase().includes(query));return matchesQuery&&(taskStore==='전체 매장'||task.store===taskStore)&&(taskStatus==='전체 상태'||task.status===taskStatus)});
-  const removeTask=(task:ExecutionTask)=>{if(!window.confirm(`“${task.title}” 과제를 삭제할까요? 삭제한 과제는 백업 파일이 없으면 복구할 수 없습니다.`))return;setExecutionTasks(current=>current.filter(item=>item.id!==task.id));toast('과제를 삭제했습니다.')};
-  const clearCompleted=()=>{const count=executionTasks.filter(task=>task.status==='완료').length;if(!count)return;if(!window.confirm(`완료된 과제 ${count}개를 모두 삭제할까요?`))return;setExecutionTasks(current=>current.filter(task=>task.status!=='완료'));toast('완료된 과제를 정리했습니다.')};
+  const emptyTask = (storeName = '해율만두전골') => ({title:'',store:storeName,area:'제품',due:'',owner:'오너',instruction:'',metricName:'',beforeValue:'',targetValue:'',afterValue:''});
+  const [newTask,setNewTask]=useState(emptyTask());
+  useEffect(() => {
+    const nextStore = selectedStore === '해율푸드 전체' ? '전체 매장' : selectedStore;
+    setTaskStore(nextStore);
+    if (selectedStore !== '해율푸드 전체') {
+      setNewTask(current => ({...current, store: selectedStore}));
+    }
+  }, [selectedStore]);
+  const taskIsInScope=(task:ExecutionTask)=>selectedStore==='해율푸드 전체'||task.store===selectedStore;
+  const addTask=()=>{if(!newTask.title.trim())return;const safeStore=selectedStore==='해율푸드 전체'?newTask.store:selectedStore;setExecutionTasks(current=>[{id:createId(),...newTask,store:safeStore,title:newTask.title.trim(),status:'결정 필요',fieldNote:''},...current]);appendAuditLog('과제 등록',`${safeStore} · ${newTask.title.trim()}`,actorName);setNewTask(emptyTask(selectedStore === '해율푸드 전체' ? '해율만두전골' : selectedStore));setShowCreate(false);toast('새 과제와 확인 지표를 저장했습니다.')};
+  const updateTask=(id:string,changes:Partial<ExecutionTask>)=>setExecutionTasks(current=>current.map(task=>task.id===id&&taskIsInScope(task)?{...task,...changes}:task));
+  const startTask=(task:ExecutionTask)=>{updateTask(task.id,{status:'진행 중',reviewNote:''});appendAuditLog('과제 실행 시작',`${task.store} · ${task.title}`,actorName);toast('과제를 진행 중으로 변경했습니다.')};
+  const submitTask=(task:ExecutionTask)=>{if(!task.fieldNote.trim()&&!task.afterValue?.trim()){toast('현장 기록이나 실행 후 결과를 먼저 입력해 주세요.');return}updateTask(task.id,{status:'결과 확인',submittedAt:new Date().toISOString(),approvedAt:'',approvedBy:'',reviewNote:''});appendAuditLog('결과 확인 요청',`${task.store} · ${task.title}`,actorName);toast('결과를 오너 확인 대기로 제출했습니다.')};
+  const approveTask=(task:ExecutionTask)=>{updateTask(task.id,{status:'완료',approvedAt:new Date().toISOString(),approvedBy:actorName,reviewNote:''});appendAuditLog('과제 승인 완료',`${task.store} · ${task.title}`,actorName);toast('현장 결과를 승인하고 과제를 완료했습니다.')};
+  const returnTask=(task:ExecutionTask)=>{const note=window.prompt('다시 확인할 내용을 직원에게 남겨 주세요.',task.reviewNote||'');if(note===null)return;const reviewNote=note.trim()||'결과를 보완해 다시 제출해 주세요.';updateTask(task.id,{status:'진행 중',reviewNote,approvedAt:'',approvedBy:''});appendAuditLog('과제 보완 요청',`${task.store} · ${task.title} · ${reviewNote}`,actorName);toast('과제를 보완 요청 상태로 돌렸습니다.')};
+  const scopedExecutionTasks = selectedStore === '해율푸드 전체' ? executionTasks : executionTasks.filter(task => task.store === selectedStore);
+  const visibleTasks=scopedExecutionTasks.filter(task=>{const query=taskQuery.trim().toLowerCase();const matchesQuery=!query||[task.title,task.store,task.area,task.owner,task.instruction,task.fieldNote].some(value=>value.toLowerCase().includes(query));return matchesQuery&&(taskStore==='전체 매장'||task.store===taskStore)&&(taskStatus==='전체 상태'||task.status===taskStatus)});
+  useEffect(()=>{if(!focusedTaskId)return;const task=scopedExecutionTasks.find(item=>item.id===focusedTaskId);if(task){setTaskQuery(task.title);setTaskStore(selectedStore==='해율푸드 전체'?task.store:selectedStore);setTaskStatus('전체 상태');window.setTimeout(()=>document.getElementById(`task-${task.id}`)?.scrollIntoView({behavior:'smooth',block:'center'}),50)}onTaskFocused()},[focusedTaskId,onTaskFocused,scopedExecutionTasks,selectedStore]);
+  const removeTask=(task:ExecutionTask)=>{if(!window.confirm(`“${task.title}” 과제를 삭제할까요? 삭제한 과제는 백업 파일이 없으면 복구할 수 없습니다.`))return;setExecutionTasks(current=>current.filter(item=>item.id!==task.id));void supabase.from('execution_tasks').delete().eq('owner_id',workspaceOwnerId).eq('id',task.id);appendAuditLog('과제 삭제',`${task.store} · ${task.title}`,actorName);toast('과제를 삭제했습니다.')};
+  const clearCompleted=()=>{const targets=scopedExecutionTasks.filter(task=>task.status==='완료');const count=targets.length;if(!count)return;if(!window.confirm(`현재 선택 범위의 완료 과제 ${count}개를 모두 삭제할까요?`))return;setExecutionTasks(current=>current.filter(task=>task.status!=='완료'||(selectedStore!=='해율푸드 전체'&&task.store!==selectedStore)));void supabase.from('execution_tasks').delete().eq('owner_id',workspaceOwnerId).in('id',targets.map(task=>task.id));appendAuditLog('완료 과제 일괄 정리',`${selectedStore} · ${count}개`,actorName);toast('완료된 과제를 정리했습니다.')};
+  const downloadTaskReport=()=>{const escape=(value:unknown)=>`"${String(value??'').replaceAll('"','""')}"`;const headers=['매장','과제명','영역','담당','기한','상태','확인지표','실행 전','목표','실행 후','현장 기록','보완 요청','제출일','승인일','승인자'];const rows=scopedExecutionTasks.map(task=>[task.store,task.title,task.area,task.owner,task.due,task.status,task.metricName,task.beforeValue,task.targetValue,task.afterValue,task.fieldNote,task.reviewNote,task.submittedAt,task.approvedAt,task.approvedBy]);const csv='\uFEFF'+[headers,...rows].map(row=>row.map(escape).join(',')).join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`해율_과제보고서_${selectedStore}_${new Date().toISOString().slice(0,10)}.csv`;link.click();URL.revokeObjectURL(url);toast('현재 선택 범위의 과제 보고서를 내려받았습니다.')};
   return (
     <div className="page-wrap">
       <Heading
         eyebrow="계획과 실행"
         title="실행 과제"
         copy="오너가 승인한 계획만 현장 과제가 됩니다."
-        action={
-          <button onClick={()=>setShowCreate(value=>!value)} className="primary-button">
-            <Plus size={18} />
-            <b>{showCreate?'입력 닫기':'새 과제'}</b>
-          </button>
+        action={<div className="task-heading-actions"><button className="secondary-button" disabled={!scopedExecutionTasks.length} onClick={downloadTaskReport}><Download size={17}/><b>보고서</b></button>{canManage&&<button onClick={()=>setShowCreate(value=>!value)} className="primary-button"><Plus size={18}/><b>{showCreate?'입력 닫기':'새 과제'}</b></button>}</div>
         }
       />
-      {showCreate&&<section className="task-create"><div className="section-title"><div><h2>새 실행 과제</h2><span>오너가 확인한 과제만 등록하세요.</span></div></div><div className="task-create-grid"><label><span>과제명</span><input value={newTask.title} onChange={e=>setNewTask({...newTask,title:e.target.value})} placeholder="예: 평일 저녁 포장 안내" autoFocus/></label><label><span>대상 매장</span><select value={newTask.store} onChange={e=>setNewTask({...newTask,store:e.target.value})}><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label><label><span>9단계 영역</span><select value={newTask.area} onChange={e=>setNewTask({...newTask,area:e.target.value})}>{stages.map(stage=><option key={stage}>{stage}</option>)}</select></label><label><span>확인 기한</span><input type="date" value={newTask.due} onChange={e=>setNewTask({...newTask,due:e.target.value})}/></label><label><span>담당</span><input value={newTask.owner} onChange={e=>setNewTask({...newTask,owner:e.target.value})}/></label><label className="wide"><span>현장 안내</span><textarea value={newTask.instruction} onChange={e=>setNewTask({...newTask,instruction:e.target.value})} placeholder="직원이 바로 실행할 수 있도록 짧게 적어주세요."/></label></div><div className="task-create-actions"><span>기기에 저장되며 로그인 상태에서는 클라우드와 자동 동기화됩니다.</span><button className="primary-button" disabled={!newTask.title.trim()} onClick={addTask}>과제 등록</button></div></section>}
-      {executionTasks.length>0&&<section className="real-task-board">
-        <div className="section-title"><div><h2>내 실행 과제</h2><span>필요한 과제를 찾고 상태와 현장 기록을 바로 수정할 수 있습니다.</span></div><span className="draft-count">{executionTasks.filter(task=>task.status==='완료').length}/{executionTasks.length} 완료</span></div>
+      <TaskSchedule tasks={scopedExecutionTasks} onSelect={task=>{setTaskQuery(task.title);setTaskStatus('전체 상태');window.setTimeout(()=>document.querySelector('.real-task-board')?.scrollIntoView({behavior:'smooth'}),0)}}/>
+      <TaskPerformance tasks={scopedExecutionTasks}/>
+      {showCreate&&<section className="task-create"><div className="section-title"><div><h2>새 실행 과제</h2><span>오너가 확인한 과제만 등록하세요.</span></div></div><div className="task-create-grid"><label><span>과제명</span><input value={newTask.title} onChange={e=>setNewTask({...newTask,title:e.target.value})} placeholder="예: 평일 저녁 포장 안내" autoFocus/></label><label><span>대상 매장</span><select value={newTask.store} onChange={e=>setNewTask({...newTask,store:e.target.value})}><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label><label><span>9단계 영역</span><select value={newTask.area} onChange={e=>setNewTask({...newTask,area:e.target.value})}>{stages.map(stage=><option key={stage}>{stage}</option>)}</select></label><label><span>확인 기한</span><input type="date" value={newTask.due} onChange={e=>setNewTask({...newTask,due:e.target.value})}/></label><label><span>담당</span><input value={newTask.owner} onChange={e=>setNewTask({...newTask,owner:e.target.value})}/></label><label><span>확인 지표</span><input value={newTask.metricName} onChange={e=>setNewTask({...newTask,metricName:e.target.value})} placeholder="예: 평일 저녁 포장 주문 수"/></label><label className="wide"><span>현장 안내</span><textarea value={newTask.instruction} onChange={e=>setNewTask({...newTask,instruction:e.target.value})} placeholder="직원이 바로 실행할 수 있도록 짧게 적어주세요."/></label><label><span>실행 전 수치</span><input value={newTask.beforeValue} onChange={e=>setNewTask({...newTask,beforeValue:e.target.value})} placeholder="예: 하루 3건"/></label><label><span>목표 수치</span><input value={newTask.targetValue} onChange={e=>setNewTask({...newTask,targetValue:e.target.value})} placeholder="예: 하루 6건"/></label></div><div className="task-create-actions"><span>기기에 저장되며 로그인 상태에서는 클라우드와 자동 동기화됩니다.</span><button className="primary-button" disabled={!newTask.title.trim()} onClick={addTask}>과제 등록</button></div></section>}
+      {scopedExecutionTasks.length>0&&<section className="real-task-board">
+        <div className="section-title"><div><h2>내 실행 과제</h2><span>{selectedStore} 기준 · 필요한 과제를 찾고 상태와 현장 기록을 바로 수정할 수 있습니다.</span></div><span className="draft-count">{scopedExecutionTasks.filter(task=>task.status==='완료').length}/{scopedExecutionTasks.length} 완료</span></div>
+        {isOwner&&scopedExecutionTasks.some(task=>task.status==='결과 확인')&&<div className="review-queue-banner"><div><Eye size={19}/><span><strong>오너 확인 대기 {scopedExecutionTasks.filter(task=>task.status==='결과 확인').length}건</strong><small>직원이 제출한 현장 결과를 확인하고 승인하거나 보완 요청해 주세요.</small></span></div><button onClick={()=>setTaskStatus('결과 확인')}>확인할 과제만 보기</button></div>}
         <div className="task-tools">
           <label><span>과제 검색</span><input value={taskQuery} onChange={e=>setTaskQuery(e.target.value)} placeholder="과제명, 담당, 현장 기록 검색"/></label>
           <label><span>매장</span><select value={taskStore} onChange={e=>setTaskStore(e.target.value)}><option>전체 매장</option><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label>
           <label><span>상태</span><select value={taskStatus} onChange={e=>setTaskStatus(e.target.value)}><option>전체 상태</option><option>결정 필요</option><option>진행 중</option><option>결과 확인</option><option>완료</option></select></label>
-          <button className="completed-clear" disabled={!executionTasks.some(task=>task.status==='완료')} onClick={clearCompleted}><Trash2 size={16}/>완료 과제 정리</button>
+          {isOwner&&<button className="completed-clear" disabled={!scopedExecutionTasks.some(task=>task.status==='완료')} onClick={clearCompleted}><Trash2 size={16}/>완료 과제 정리</button>}
         </div>
-        <div className="task-result-count">전체 {executionTasks.length}개 중 {visibleTasks.length}개 표시</div>
-        <div className="real-task-list">{visibleTasks.map(task=><article key={task.id}><div className="real-task-head"><div><span>{task.store} · {task.area}</span><input aria-label="과제명" value={task.title} onChange={e=>updateTask(task.id,{title:e.target.value})}/></div><select aria-label={task.title+' 상태'} value={task.status} onChange={e=>updateTask(task.id,{status:e.target.value as ExecutionTask['status']})}><option>결정 필요</option><option>진행 중</option><option>결과 확인</option><option>완료</option></select></div><div className="real-task-meta"><span>담당 <b>{task.owner}</b></span><span>기한 <b>{task.due||'미정'}</b></span></div><label><span>현장 안내</span><textarea value={task.instruction} onChange={e=>updateTask(task.id,{instruction:e.target.value})} placeholder="실행 방법을 입력하세요."/></label><label><span>현장 기록</span><textarea value={task.fieldNote} onChange={e=>updateTask(task.id,{fieldNote:e.target.value})} placeholder="고객 반응, 직원 의견, 결과를 기록하세요."/></label><div className="task-card-foot"><small>입력 내용은 자동 저장됩니다.</small><button onClick={()=>removeTask(task)} aria-label={task.title+' 삭제'}><Trash2 size={15}/>삭제</button></div></article>)}</div>
+        <div className="task-result-count">선택 범위 {scopedExecutionTasks.length}개 중 {visibleTasks.length}개 표시</div>
+        <div className="real-task-list">
+          {visibleTasks.map(task=>(
+            <article id={`task-${task.id}`} key={task.id} className={`task-workflow-card ${task.status==='결과 확인'?'awaiting-review':''}`}>
+              <div className="real-task-head">
+                <div><span>{task.store} · {task.area}</span><input aria-label="과제명" value={task.title} readOnly={!canManage} onChange={e=>updateTask(task.id,{title:e.target.value})}/></div>
+                <select aria-label={task.title+' 상태'} value={task.status} disabled={!canManage||task.status==='완료'} onChange={e=>updateTask(task.id,{status:e.target.value as ExecutionTask['status']})}><option>결정 필요</option><option>진행 중</option><option>결과 확인</option>{isOwner&&<option>완료</option>}</select>
+              </div>
+              <div className="real-task-meta"><span>담당 <b>{task.owner}</b></span><span>기한 <b>{task.due||'미정'}</b></span></div>
+              {task.reviewNote&&<div className="review-return-note"><strong>보완 요청</strong><span>{task.reviewNote}</span></div>}
+              <label><span>현장 안내</span><textarea value={task.instruction} readOnly={!canManage} onChange={e=>updateTask(task.id,{instruction:e.target.value})} placeholder="실행 방법을 입력하세요."/></label>
+              <section className="task-result-fields">
+                <label><span>확인 지표</span><input value={task.metricName||''} readOnly={!canManage} onChange={e=>updateTask(task.id,{metricName:e.target.value})} placeholder="예: 포장 주문 수"/></label>
+                <label><span>실행 전</span><input value={task.beforeValue||''} readOnly={!canManage} onChange={e=>updateTask(task.id,{beforeValue:e.target.value})} placeholder="예: 하루 3건"/></label>
+                <label><span>목표</span><input value={task.targetValue||''} readOnly={!canManage} onChange={e=>updateTask(task.id,{targetValue:e.target.value})} placeholder="예: 하루 6건"/></label>
+                <label><span>실행 후</span><input value={task.afterValue||''} readOnly={task.status==='완료'} onChange={e=>updateTask(task.id,{afterValue:e.target.value})} placeholder="결과 입력"/></label>
+              </section>
+              <label><span>현장 기록</span><textarea value={task.fieldNote} readOnly={task.status==='완료'} onChange={e=>updateTask(task.id,{fieldNote:e.target.value})} placeholder="고객 반응, 직원 의견, 결과를 기록하세요."/></label>
+              {task.afterValue&&<div className="task-result-summary"><CircleCheck size={17}/><span><b>{task.metricName||'확인 지표'}</b> · 실행 전 {task.beforeValue||'미입력'} → 실행 후 {task.afterValue}{task.targetValue?` · 목표 ${task.targetValue}`:''}</span></div>}
+              <div className="workflow-history">{task.submittedAt&&<span>제출 {new Date(task.submittedAt).toLocaleString('ko-KR')}</span>}{task.approvedAt&&<span>승인 {new Date(task.approvedAt).toLocaleString('ko-KR')} · {task.approvedBy}</span>}</div>
+              <div className="task-card-foot">
+                <small>{task.status==='결과 확인'?'오너 확인을 기다리고 있습니다.':task.status==='완료'?'오너 승인이 완료되었습니다.':'현장 기록을 입력한 뒤 결과 확인을 요청하세요.'}</small>
+                <div className="workflow-actions">
+                  {task.status==='결정 필요'&&<button className="submit-review" onClick={()=>startTask(task)}><Target size={15}/>실행 시작</button>}
+                  {task.status==='진행 중'&&<button className="submit-review" onClick={()=>submitTask(task)}><CircleCheck size={15}/>결과 확인 요청</button>}
+                  {isOwner&&task.status==='결과 확인'&&<><button className="return-task" onClick={()=>returnTask(task)}>보완 요청</button><button className="approve-task" onClick={()=>approveTask(task)}><CircleCheck size={15}/>승인·완료</button></>}
+                  {isOwner&&<button onClick={()=>removeTask(task)} aria-label={task.title+' 삭제'}><Trash2 size={15}/>삭제</button>}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
         {!visibleTasks.length&&<div className="task-empty"><strong>조건에 맞는 과제가 없습니다.</strong><span>검색어나 필터를 바꿔 주세요.</span></div>}
       </section>}
       {adoptedTasks.length > 0 && (
@@ -1047,19 +1386,29 @@ function Plans({
 function Sales({
   toast,
   sessionSummary,
-  setSessionSummary,
+  saveSessionSummary,
+  salesSummaries,
+  availableSummaries,
+  selectedSalesMonth,
+  setSelectedSalesMonth,
   adoptedTasks,
   setAdoptedTasks,
   setCompletedTasks,
+  selectedStore,
+  openManage,
 }: {
   toast: (s: string) => void;
   sessionSummary: SessionSummary | null;
-  setSessionSummary: React.Dispatch<
-    React.SetStateAction<SessionSummary | null>
-  >;
+  saveSessionSummary: (summary: SessionSummary) => void;
+  salesSummaries: SessionSummary[];
+  availableSummaries: SessionSummary[];
+  selectedSalesMonth: string;
+  setSelectedSalesMonth: (value: string) => void;
   adoptedTasks: string[];
   setAdoptedTasks: React.Dispatch<React.SetStateAction<string[]>>;
   setCompletedTasks: React.Dispatch<React.SetStateAction<string[]>>;
+  selectedStore: StoreScope;
+  openManage:(section?:string)=>void;
 }) {
   type FileInfo = {
     name: string;
@@ -1094,6 +1443,11 @@ function Sales({
   const [savingImport, setSavingImport] = useState(false);
   const [salesHistory, setSalesHistory] = useState<SalesImportHistory[]>([]);
   const [store, setStore] = useState('해율만두전골');
+  const [passportStats,setPassportStats]=useState<PassportStats|null>(null);
+  const [passportLoading,setPassportLoading]=useState(true);
+  useEffect(() => {
+    if (selectedStore !== '해율푸드 전체') setStore(selectedStore);
+  }, [selectedStore]);
   const [month, setMonth] = useState('2026-08');
   const loadSalesHistory = async () => {
     const { data: authData } = await supabase.auth.getUser();
@@ -1119,6 +1473,7 @@ function Sales({
     }));
   };
   useEffect(() => { void loadSalesHistory(); }, []);
+  useEffect(()=>{let active=true;void supabase.auth.getSession().then(async({data})=>{if(!data.session){if(active)setPassportLoading(false);return}try{const response=await fetch(passportStatsUrl,{headers:{Authorization:`Bearer ${data.session.access_token}`},cache:'no-store'});if(response.ok&&active)setPassportStats(await response.json() as PassportStats)}finally{if(active)setPassportLoading(false)}});return()=>{active=false}},[]);
   const reset = () => {
     setFileInfo(null);
     setMapping({ date: '', sales: '', customers: '', orders: '' });
@@ -1322,6 +1677,25 @@ function Sales({
       : '';
     return { date, sales, customers, issue: '정상' };
   });
+  const comparisonStores = selectedStore === '해율푸드 전체'
+    ? storeOptions.slice(1)
+    : [selectedStore];
+  const comparisonMonth = sessionSummary?.month ?? '';
+  const currentComparison = salesSummaries.filter(summary => comparisonStores.includes(summary.store as typeof comparisonStores[number]) && summary.month === comparisonMonth);
+  const priorMonth = [...new Set(salesSummaries
+    .filter(summary => comparisonStores.includes(summary.store as typeof comparisonStores[number]) && summary.month < comparisonMonth)
+    .map(summary => summary.month))].sort((a,b) => b.localeCompare(a))[0] ?? '';
+  const priorComparison = salesSummaries.filter(summary => comparisonStores.includes(summary.store as typeof comparisonStores[number]) && summary.month === priorMonth);
+  const sumSales = (items: SessionSummary[]) => items.reduce((sum,item) => sum + item.totalSales, 0);
+  const sumCustomers = (items: SessionSummary[]) => items.reduce((sum,item) => sum + (item.totalCustomers ?? 0), 0);
+  const currentSales = sumSales(currentComparison);
+  const priorSales = sumSales(priorComparison);
+  const currentCustomers = sumCustomers(currentComparison);
+  const priorCustomers = sumCustomers(priorComparison);
+  const currentAverage = currentCustomers ? Math.round(currentSales/currentCustomers) : null;
+  const priorAverage = priorCustomers ? Math.round(priorSales/priorCustomers) : null;
+  const changeRate = (current:number|null, previous:number|null) => current != null && previous ? Math.round((current-previous)/previous*100) : null;
+  const rateText = (rate:number|null) => rate == null ? '비교자료 없음' : `${rate >= 0 ? '+' : ''}${rate}%`;
   return (
     <div className="page-wrap">
       <Heading
@@ -1338,6 +1712,56 @@ function Sales({
           </button>
         }
       />
+      {!importOpen && (
+        <section className="sales-scope-bar" aria-label="저장된 매출자료 선택">
+          <div>
+            <span>조회 자료</span>
+            <strong>{selectedStore} · 저장된 매출자료 {availableSummaries.length}건</strong>
+          </div>
+          {availableSummaries.length ? (
+            <select
+              aria-label="조회할 매장과 기준월"
+              value={sessionSummary ? `${sessionSummary.store}|${sessionSummary.month}` : selectedSalesMonth}
+              onChange={event => setSelectedSalesMonth(event.target.value)}
+            >
+              {availableSummaries.map(summary => (
+                <option key={`${summary.store}|${summary.month}`} value={`${summary.store}|${summary.month}`}>
+                  {summary.store} · {summary.month}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <small>이 선택 범위에 등록된 매출자료가 없습니다.</small>
+          )}
+          <small>전체 누적 {salesSummaries.length}건</small>
+        </section>
+      )}
+      {!importOpen && comparisonMonth && (
+        <section className="sales-comparison" aria-label="매장별 월간 비교">
+          <div className="section-title">
+            <div><h2>{comparisonMonth} 매출 비교</h2><span>{priorMonth ? `${priorMonth} 대비 변화` : '이전 월 자료를 등록하면 증감률을 표시합니다.'}</span></div>
+            <span className="comparison-range">{selectedStore}</span>
+          </div>
+          <div className="comparison-totals">
+            <article><span>매출</span><strong>{showWon(currentSales)}</strong><small>{rateText(changeRate(currentSales,priorSales))}</small></article>
+            <article><span>고객 수</span><strong>{currentCustomers ? `${currentCustomers.toLocaleString()}명` : '자료 없음'}</strong><small>{rateText(changeRate(currentCustomers||null,priorCustomers||null))}</small></article>
+            <article><span>객단가</span><strong>{currentAverage ? showWon(currentAverage) : '자료 없음'}</strong><small>{rateText(changeRate(currentAverage,priorAverage))}</small></article>
+          </div>
+          <div className="store-comparison-grid">
+            {comparisonStores.map(storeName => {
+              const current = currentComparison.find(summary => summary.store === storeName);
+              const previous = priorComparison.find(summary => summary.store === storeName);
+              const customers = current?.totalCustomers ?? null;
+              const average = current && customers ? Math.round(current.totalSales/customers) : null;
+              return <article key={storeName} className={current ? '' : 'empty'}>
+                <div><span>{storeName}</span><small>{comparisonMonth}</small></div>
+                <strong>{current ? showWon(current.totalSales) : '자료 없음'}</strong>
+                <dl><div><dt>전월 대비</dt><dd>{current ? rateText(changeRate(current.totalSales,previous?.totalSales??null)) : '—'}</dd></div><div><dt>고객 수</dt><dd>{customers!=null?`${customers.toLocaleString()}명`:'자료 없음'}</dd></div><div><dt>객단가</dt><dd>{average?showWon(average):'자료 없음'}</dd></div></dl>
+              </article>;
+            })}
+          </div>
+        </section>
+      )}
       {importOpen && (
         <section className="sales-import" aria-label="매출 엑셀 등록">
           <div className="import-head">
@@ -1798,10 +2222,11 @@ function Sales({
                           '곤드레밥집': 'gondre-bapjip',
                           '정담명가': 'jeongdam-myeongga',
                         };
+                        const safeStore = selectedStore === '해율푸드 전체' ? store : selectedStore;
                         setSavingImport(true);
                         const { error: saveError } = await supabase.rpc('save_sales_import', {
-                          p_store_name: store,
-                          p_store_slug: storeSlugs[store],
+                          p_store_name: safeStore,
+                          p_store_slug: storeSlugs[safeStore],
                           p_period_month: month + '-01',
                           p_source_filename: fileInfo.name,
                           p_rows: daily.map((row) => ({
@@ -1816,8 +2241,8 @@ function Sales({
                           toast('Supabase에 매출자료를 반영하지 못했습니다. 자료와 로그인 상태를 확인해 주세요.');
                           return;
                         }
-                        setSessionSummary({
-                          store,
+                        saveSessionSummary({
+                          store: safeStore,
                           month,
                           rows: assessment.usable,
                           totalSales,
@@ -2342,30 +2767,26 @@ function Sales({
             </section>
             <section className="customer-card">
               <span className="eyebrow">전자여권 통계</span>
-              <h2>고객관계</h2>
+              <h2>{passportLoading?'고객 통계 확인 중':'고객관계'}</h2>
               <ul>
                 <li>
                   <span>신규 가입</span>
-                  <b>통계 입력 필요</b>
+                  <b>{passportStats?`${passportStats.summary.newCustomersThisMonth.toLocaleString('ko-KR')}명`:'연결 확인 필요'}</b>
                 </li>
                 <li>
                   <span>재방문</span>
-                  <b>통계 입력 필요</b>
+                  <b>{passportStats?`${passportStats.summary.repeatCustomers.toLocaleString('ko-KR')}명`:'연결 확인 필요'}</b>
                 </li>
                 <li>
                   <span>60일 이상 미방문</span>
-                  <b>통계 입력 필요</b>
+                  <b>{passportStats?`${passportStats.summary.longAbsent60Days.toLocaleString('ko-KR')}명`:'연결 확인 필요'}</b>
                 </li>
               </ul>
               <button
-                onClick={() =>
-                  toast(
-                    '관리의 전자여권 통계 화면에서 연결 준비를 확인할 수 있습니다.',
-                  )
-                }
+                onClick={() => openManage('전자여권 통계')}
                 className="secondary-button"
               >
-                통계 연결 확인
+                {passportStats?'통계 상세 보기':'통계 연결 확인'}
               </button>
             </section>
           </div>
@@ -2685,7 +3106,7 @@ function Sales({
   );
 }
 
-function Stages({go,executionTasks,sessionSummary}:{go:(v:string)=>void;executionTasks:ExecutionTask[];sessionSummary:SessionSummary|null}) {
+function Stages({go,executionTasks,sessionSummary,selectedStore}:{go:(v:string)=>void;executionTasks:ExecutionTask[];sessionSummary:SessionSummary|null;selectedStore:StoreScope}) {
   const [selectedStage,setSelectedStage]=useState(stages[0]);
   const active=executionTasks.filter(task=>task.status!=='완료');
   const completed=executionTasks.filter(task=>task.status==='완료');
@@ -2700,7 +3121,7 @@ function Stages({go,executionTasks,sessionSummary}:{go:(v:string)=>void;executio
       <Heading
         eyebrow="매출성장 9단계"
         title="경영의 빈틈을 한눈에"
-        copy="점수가 아니라 현재 문제와 실행 과제를 중심으로 봅니다."
+        copy={`${selectedStore} · 점수가 아니라 현재 문제와 실행 과제를 중심으로 봅니다.`}
         action={
           <button onClick={() => go('AI 진단')} className="primary-button">
             <Sparkles size={18} />
@@ -2767,8 +3188,18 @@ function Stages({go,executionTasks,sessionSummary}:{go:(v:string)=>void;executio
   );
 }
 
-function Manage({ toast }: { toast: (s: string) => void }) {
+function AuditLogPanel({toast}:{toast:(s:string)=>void}){
+  const [logs,setLogs]=useState<AuditLog[]>([]);const [query,setQuery]=useState('');
+  const load=async()=>{const {data}=await supabase.from('workspace_activity_logs').select('id,action,detail,actor,created_at').order('created_at',{ascending:false}).limit(300);if(data){setLogs(data.map(row=>({id:String(row.id),action:String(row.action),detail:String(row.detail),actor:String(row.actor),createdAt:String(row.created_at)})));return}try{setLogs(JSON.parse(window.localStorage.getItem('haeyul-audit-log-v1')||'[]') as AuditLog[])}catch{setLogs([])}};
+  useEffect(()=>{const refresh=()=>void load();refresh();window.addEventListener(auditLogChangedEvent,refresh);const channel=supabase.channel('workspace-activity-log').on('postgres_changes',{event:'INSERT',schema:'public',table:'workspace_activity_logs'},refresh).subscribe();return()=>{window.removeEventListener(auditLogChangedEvent,refresh);void supabase.removeChannel(channel)}},[]);
+  const visible=logs.filter(log=>!query.trim()||[log.action,log.detail,log.actor].some(value=>value.toLowerCase().includes(query.trim().toLowerCase())));
+  const download=()=>{const rows=[['일시','사용자','작업','상세'],...visible.map(log=>[new Date(log.createdAt).toLocaleString('ko-KR'),log.actor,log.action,log.detail])];const csv='\uFEFF'+rows.map(row=>row.map(value=>`"${value.replaceAll('"','""')}"`).join(',')).join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=`해율_관리변경기록_${new Date().toISOString().slice(0,10)}.csv`;link.click();URL.revokeObjectURL(url);toast('변경 기록을 내려받았습니다.')};
+  return <><ManageHead step="관리 기록" title="변경 기록" copy="과제와 주요 관리정보에서 누가 무엇을 변경했는지 확인합니다."/><div className="audit-log-tools"><label><Search size={16}/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="작업, 상세내용, 사용자 검색"/></label><button className="secondary-button" disabled={!visible.length} onClick={download}><Download size={16}/>기록 내려받기</button></div><div className="audit-log-summary"><article><span>전체 기록</span><strong>{logs.length}건</strong></article><article><span>검색 결과</span><strong>{visible.length}건</strong></article><article><span>최근 변경</span><strong>{logs[0]?new Date(logs[0].createdAt).toLocaleDateString('ko-KR'):'없음'}</strong></article></div>{visible.length?<div className="audit-log-list">{visible.map(log=><article key={log.id}><span className="audit-log-icon"><Settings size={16}/></span><div><strong>{log.action}</strong><p>{log.detail}</p></div><div><b>{log.actor}</b><span>{new Date(log.createdAt).toLocaleString('ko-KR')}</span></div></article>)}</div>:<div className="schedule-empty"><CircleCheck size={22}/><span>표시할 변경 기록이 없습니다.</span></div>}</>;
+}
+
+function Manage({ toast, requestedSection, onSectionChange }: { toast: (s: string) => void; requestedSection:string; onSectionChange:(section:string)=>void }) {
   const [section, setSection] = useState('매장 기본정보');
+  useEffect(()=>{if(requestedSection)setSection(requestedSection)},[requestedSection]);
   const [store, setStore] = useState('해율만두전골');
   const stores = ['해율만두전골', '곤드레밥집', '정담명가'];
   const initialMenus = () =>
@@ -2849,6 +3280,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
     'haeyul-store-drafts-v1',
     'haeyul-menu-drafts-v1',
     'haeyul-principle-draft-v1',
+    'haeyul-audit-log-v1',
   ] as const;
   useEffect(() => {
     try {
@@ -2891,6 +3323,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
     window.dispatchEvent(new Event(localDataChangedEvent));
     setDraftSaved(true);
     setSavedGroupCount(backupKeys.filter((key) => window.localStorage.getItem(key)).length);
+    appendAuditLog('매장 기본정보 저장',store);
     toast('매장 기본정보를 저장했습니다.');
   };
   const menuRows = menuDrafts[store] || [];
@@ -2920,6 +3353,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
     window.dispatchEvent(new Event(localDataChangedEvent));
     setDraftSaved(true);
     setSavedGroupCount(backupKeys.filter((key) => window.localStorage.getItem(key)).length);
+    appendAuditLog('메뉴·가격 저장',`${store} · ${menuRows.length}개 메뉴`);
     toast('메뉴와 가격을 저장했습니다.');
   };
   const savePrinciples = () => {
@@ -2930,6 +3364,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
     window.dispatchEvent(new Event(localDataChangedEvent));
     setDraftSaved(true);
     setSavedGroupCount(backupKeys.filter((key) => window.localStorage.getItem(key)).length);
+    appendAuditLog('AI 운영원칙 저장','공통 운영원칙 변경');
     toast('AI 운영원칙을 저장했습니다.');
   };
   const exportBackup = () => {
@@ -2949,6 +3384,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
     URL.revokeObjectURL(url);
     window.localStorage.setItem('haeyul-backup-last-v1', exportedAt);
     setLastBackup(exportedAt);
+    appendAuditLog('전체 백업 저장',exportedAt);
     toast('전체 데이터를 백업 파일로 저장했습니다.');
   };
   const importBackup = async (file: File | undefined) => {
@@ -2972,6 +3408,7 @@ function Manage({ toast }: { toast: (s: string) => void }) {
         if (typeof value === 'string') window.localStorage.setItem(key, value);
         else window.localStorage.removeItem(key);
       }
+      appendAuditLog('전체 백업 복원',file.name);
       toast('백업을 복원했습니다. 화면을 새로 불러옵니다.');
       window.setTimeout(() => window.location.reload(), 700);
     } catch {
@@ -3008,12 +3445,13 @@ function Manage({ toast }: { toast: (s: string) => void }) {
             [Download, '백업·복원'],
             [Upload, '해율 지식창고'],
             [Users, '전자여권 통계'],
+            [Eye, '변경 기록'],
             [Settings, '계정·보안'],
           ].map(([Icon, title]) => (
             <button
               className={section === title ? 'active' : ''}
               key={String(title)}
-              onClick={() => setSection(String(title))}
+              onClick={() => {setSection(String(title));onSectionChange(String(title))}}
             >
               <Icon size={19} />
               <span>{String(title)}</span>
@@ -3281,6 +3719,8 @@ function Manage({ toast }: { toast: (s: string) => void }) {
             <KnowledgePanel toast={toast} />
           ) : section === '전자여권 통계' ? (
             <PassportPanel toast={toast} />
+          ) : section === '변경 기록' ? (
+            <AuditLogPanel toast={toast}/>
           ) : (
             <AccountSecurity toast={toast} />
           )}
@@ -3313,7 +3753,6 @@ type KnowledgeDocument = {
   size_bytes: number;
   created_at: string;
 };
-
 function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -3323,6 +3762,11 @@ function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
   const [sourceDate, setSourceDate] = useState('');
   const [busy, setBusy] = useState(false);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [query, setQuery] = useState('');
+  const [filterStore, setFilterStore] = useState('전체 매장');
+  const [filterCategory, setFilterCategory] = useState('전체 종류');
+  const [preview, setPreview] = useState<{document:KnowledgeDocument;kind:'image'|'pdf'|'text';url?:string;text?:string}|null>(null);
+  const previewUrlRef = useRef('');
   const mimeByExtension: Record<string, string> = {
     pdf: 'application/pdf',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -3338,6 +3782,7 @@ function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
     if (!error && data) setDocuments(data as KnowledgeDocument[]);
   };
   useEffect(() => { void loadDocuments(); }, []);
+  useEffect(() => () => { if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current); }, []);
   const selectFile = (selected?: File) => {
     if (!selected) return;
     const extension = selected.name.split('.').pop()?.toLowerCase() || '';
@@ -3386,6 +3831,33 @@ function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
     link.href = url; link.download = document.original_filename; link.click();
     URL.revokeObjectURL(url);
   };
+  const closePreview = () => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
+    previewUrlRef.current = '';
+    setPreview(null);
+  };
+  const previewDocument = async (document: KnowledgeDocument) => {
+    const isImage = document.mime_type.startsWith('image/');
+    const isPdf = document.mime_type === 'application/pdf';
+    const isText = document.mime_type.startsWith('text/') || /\.(txt|csv)$/i.test(document.original_filename);
+    if (!isImage && !isPdf && !isText) {
+      toast('Word와 Excel 파일은 미리보기를 지원하지 않습니다. 받기 버튼으로 확인해 주세요.');
+      return;
+    }
+    setBusy(true);
+    const { data, error } = await supabase.storage.from('haeyul-knowledge').download(document.object_path);
+    setBusy(false);
+    if (error || !data) { toast('미리보기 파일을 불러오지 못했습니다.'); return; }
+    closePreview();
+    if (isText) {
+      const text = (await data.text()).slice(0, 50000);
+      setPreview({document,kind:'text',text});
+      return;
+    }
+    const url = URL.createObjectURL(data);
+    previewUrlRef.current = url;
+    setPreview({document,kind:isImage?'image':'pdf',url});
+  };
   const deleteDocument = async (document: KnowledgeDocument) => {
     if (!window.confirm(`“${document.title}” 문서를 삭제할까요? 삭제 후에는 백업 없이 복구할 수 없습니다.`)) return;
     setBusy(true);
@@ -3397,6 +3869,13 @@ function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
     await loadDocuments();
     toast('지식창고에서 문서를 삭제했습니다.');
   };
+  const cleanQuery = query.trim().toLowerCase();
+  const filteredDocuments = documents.filter(document => {
+    const matchesQuery = !cleanQuery || [document.title,document.original_filename].some(value => value.toLowerCase().includes(cleanQuery));
+    const matchesStore = filterStore === '전체 매장' || document.store_scope === filterStore || document.store_scope === '해율푸드 전체';
+    const matchesCategory = filterCategory === '전체 종류' || document.category === filterCategory;
+    return matchesQuery && matchesStore && matchesCategory;
+  });
   return <>
     <ManageHead step="자료 저장" title="해율 지식창고" copy="브랜드·레시피·직원규칙·운영문서를 비공개로 저장하고 AI 참고 범위를 분류합니다." />
     {!loggedIn && <div className="knowledge-login"><CircleCheck size={18}/><span>문서를 등록하려면 먼저 계정·보안에서 Supabase에 로그인해 주세요.</span></div>}
@@ -3416,13 +3895,19 @@ function KnowledgePanel({ toast }: { toast: (s: string) => void }) {
       <button className="primary-button knowledge-submit" disabled={!loggedIn || !file || !title.trim() || busy} onClick={uploadDocument}>{busy ? '처리 중' : '지식창고에 등록'}</button>
     </div>
     <div className="knowledge-section">
-      <div className="section-title"><div><h2>등록된 자료</h2><span>파일은 비공개이며 로그인한 소유자만 열 수 있습니다.</span></div><strong>{documents.length}개</strong></div>
-      {documents.length ? documents.map(document => <div className="knowledge-row" key={document.id}>
+      <div className="section-title"><div><h2>등록된 자료</h2><span>파일은 비공개이며 로그인한 소유자만 열 수 있습니다.</span></div><strong>{filteredDocuments.length} / {documents.length}개</strong></div>
+      <div className="knowledge-tools">
+        <label><span>자료 검색</span><div><Search size={17}/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="자료명 또는 파일명 검색"/></div></label>
+        <label><span>매장</span><select value={filterStore} onChange={event=>setFilterStore(event.target.value)}><option>전체 매장</option><option>해율푸드 전체</option><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label>
+        <label><span>자료 종류</span><select value={filterCategory} onChange={event=>setFilterCategory(event.target.value)}><option>전체 종류</option><option>브랜드</option><option>레시피</option><option>직원규칙</option><option>운영문서</option><option>기타</option></select></label>
+      </div>
+      {filteredDocuments.length ? filteredDocuments.map(document => <div className="knowledge-row" key={document.id}>
         <div className="summary-icon green"><FileText size={19}/></div>
         <div><strong>{document.title}</strong><span>{document.store_scope} · {document.category}{document.source_date ? ` · ${document.source_date}` : ''}<br/>{document.original_filename} · {Math.max(1, Math.round(document.size_bytes/1024)).toLocaleString()} KB</span></div>
-        <div className="knowledge-actions"><button className="secondary-button" disabled={busy} onClick={()=>void downloadDocument(document)}><Download size={15}/>받기</button><button className="knowledge-delete" disabled={busy} onClick={()=>void deleteDocument(document)}><Trash2 size={15}/>삭제</button></div>
-      </div>) : <div className="task-empty"><strong>등록된 지식자료가 없습니다.</strong><span>브랜드 기준이나 운영문서부터 한 개씩 등록해 주세요.</span></div>}
+        <div className="knowledge-actions"><button className="secondary-button" disabled={busy} onClick={()=>void previewDocument(document)}><Eye size={15}/>미리보기</button><button className="secondary-button" disabled={busy} onClick={()=>void downloadDocument(document)}><Download size={15}/>받기</button><button className="knowledge-delete" disabled={busy} onClick={()=>void deleteDocument(document)}><Trash2 size={15}/>삭제</button></div>
+      </div>) : <div className="task-empty"><strong>{documents.length?'검색 조건에 맞는 자료가 없습니다.':'등록된 지식자료가 없습니다.'}</strong><span>{documents.length?'검색어나 필터를 바꿔 주세요.':'브랜드 기준이나 운영문서부터 한 개씩 등록해 주세요.'}</span></div>}
     </div>
+    {preview&&<div className="knowledge-preview-backdrop" role="dialog" aria-modal="true" aria-label={preview.document.title+' 미리보기'} onMouseDown={event=>{if(event.target===event.currentTarget)closePreview()}}><section className="knowledge-preview"><header><div><span>{preview.document.store_scope} · {preview.document.category}</span><h2>{preview.document.title}</h2><small>{preview.document.original_filename}</small></div><button onClick={closePreview} aria-label="미리보기 닫기"><X size={22}/></button></header><div className="knowledge-preview-body">{preview.kind==='image'?<img src={preview.url} alt={preview.document.title}/>:preview.kind==='pdf'?<iframe src={preview.url} title={preview.document.title}/>:<pre>{preview.text||'내용이 없습니다.'}</pre>}</div><footer><button className="secondary-button" onClick={closePreview}>닫기</button><button className="primary-button" onClick={()=>void downloadDocument(preview.document)}><Download size={16}/>파일 받기</button></footer></section></div>}
   </>;
 }
 function ManageHead({
@@ -3623,18 +4108,23 @@ function AccountSecurity({ toast }: { toast: (s: string) => void }) {
   const [syncBusy,setSyncBusy]=useState(false);
   const [cloudUpdatedAt,setCloudUpdatedAt]=useState('');
   const [autoSyncState,setAutoSyncState]=useState<CloudSyncState>('checking');
+  const [members,setMembers]=useState<WorkspaceMember[]>([]);
+  const [memberBusy,setMemberBusy]=useState(false);
+  const [showMemberForm,setShowMemberForm]=useState(false);
+  const [memberDraft,setMemberDraft]=useState({email:'',displayName:'',role:'staff' as 'manager'|'staff',storeScope:'해율만두전골' as StoreScope});
   useEffect(()=>{let active=true;void supabase.auth.getUser().then(({data})=>{if(active)setUser(data.user)});const {data:{subscription}}=supabase.auth.onAuthStateChange((_event,session)=>{if(active)setUser(session?.user??null)});return()=>{active=false;subscription.unsubscribe()}},[]);
   useEffect(()=>{if(!user){setCloudUpdatedAt('');return}void supabase.from('workspace_snapshots').select('updated_at').eq('user_id',user.id).maybeSingle().then(({data})=>setCloudUpdatedAt(data?.updated_at||''))},[user]);
+  const loadMembers=async()=>{if(!user){setMembers([]);return}const {data,error}=await supabase.from('workspace_members').select('id,owner_id,user_id,email,display_name,role,store_scope,is_active,created_at').order('created_at');if(error){toast('계정 목록을 불러오지 못했습니다.');return}setMembers((data||[]) as WorkspaceMember[])};
+  useEffect(()=>{void loadMembers()},[user]);
   useEffect(()=>{try{const saved=JSON.parse(window.localStorage.getItem(cloudSyncStateKey)||'null') as {state?:CloudSyncState;updatedAt?:string}|null;if(saved?.state)setAutoSyncState(saved.state);if(saved?.updatedAt)setCloudUpdatedAt(saved.updatedAt)}catch{}const onStatus=(event:Event)=>{const detail=(event as CustomEvent<{state:CloudSyncState;updatedAt:string}>).detail;setAutoSyncState(detail.state);if(detail.updatedAt)setCloudUpdatedAt(detail.updatedAt)};window.addEventListener(cloudSyncStatusEvent,onStatus);return()=>window.removeEventListener(cloudSyncStatusEvent,onStatus)},[]);
   const sendLoginLink=async()=>{const clean=email.trim();if(!clean)return;setAuthBusy(true);const {error}=await supabase.auth.signInWithOtp({email:clean,options:{emailRedirectTo:window.location.origin,shouldCreateUser:true}});setAuthBusy(false);toast(error?'로그인 이메일을 보내지 못했습니다. 잠시 후 다시 시도해 주세요.':'로그인 링크를 이메일로 보냈습니다. 메일에서 링크를 눌러 주세요.')};
   const saveToCloud=async()=>{if(!user)return;setSyncBusy(true);const updatedAt=new Date().toISOString();const {data,error}=await supabase.from('workspace_snapshots').upsert({user_id:user.id,payload:readLocalCloudPayload(),schema_version:1,updated_at:updatedAt},{onConflict:'user_id'}).select('updated_at').single();setSyncBusy(false);if(error){toast('클라우드 저장에 실패했습니다. 다시 시도해 주세요.');return}setCloudUpdatedAt(data.updated_at);window.dispatchEvent(new Event(cloudSyncRefreshEvent));toast('이 기기의 데이터를 Supabase에 저장했습니다.')};
   const loadFromCloud=async()=>{if(!user)return;setSyncBusy(true);const {data,error}=await supabase.from('workspace_snapshots').select('payload,updated_at').eq('user_id',user.id).maybeSingle();setSyncBusy(false);if(error){toast('클라우드 데이터를 불러오지 못했습니다.');return}if(!data){toast('이 계정에 저장된 클라우드 데이터가 없습니다.');return}if(!window.confirm('현재 이 기기의 내용을 클라우드에 저장된 내용으로 바꿀까요?'))return;try{const payload=data.payload as Record<string,unknown>;for(const key of cloudStorageKeys){const value=payload?.[key];if(value!==null&&typeof value!=='string')throw new Error('invalid');if(typeof value==='string')JSON.parse(value)}for(const key of cloudStorageKeys){const value=payload[key];if(typeof value==='string')window.localStorage.setItem(key,value);else window.localStorage.removeItem(key)}publishCloudSyncState('synced',data.updated_at);toast('클라우드 데이터를 불러왔습니다. 화면을 새로 엽니다.');window.setTimeout(()=>window.location.reload(),700)}catch{toast('클라우드 데이터 형식이 올바르지 않아 복원을 중단했습니다.')}};
-  const signOut=async()=>{await supabase.auth.signOut();setUser(null);toast('Supabase 계정에서 로그아웃했습니다.')};
-  const rules = [
-    ['오너', '모든 경영자료 확인 · 승인 · 설정 변경', '현재 사용 중'],
-    ['매장 책임자', '담당 매장의 과제와 결과만 확인', '추후 추가'],
-    ['직원', '배정된 실행 안내와 현장 기록만 사용', '추후 추가'],
-  ];
+  const signOut=async()=>{await supabase.auth.signOut();setUser(null);setMembers([]);toast('Supabase 계정에서 로그아웃했습니다.')};
+  const addMember=async()=>{if(!user||!memberDraft.email.trim()||!memberDraft.displayName.trim())return;setMemberBusy(true);const {error}=await supabase.from('workspace_members').insert({owner_id:user.id,email:memberDraft.email.trim().toLowerCase(),display_name:memberDraft.displayName.trim(),role:memberDraft.role,store_scope:memberDraft.storeScope,created_by:user.id});setMemberBusy(false);if(error){toast(error.code==='23505'?'이미 등록된 이메일입니다.':'직원 계정을 등록하지 못했습니다.');return}setMemberDraft({email:'',displayName:'',role:'staff',storeScope:'해율만두전골'});setShowMemberForm(false);await loadMembers();toast('직원 계정을 등록했습니다. 해당 이메일로 로그인하면 자동 연결됩니다.')};
+  const updateMember=async(member:WorkspaceMember,changes:Partial<WorkspaceMember>)=>{if(member.role==='owner')return;setMemberBusy(true);const {error}=await supabase.from('workspace_members').update(changes).eq('id',member.id);setMemberBusy(false);if(error){toast('계정 권한을 변경하지 못했습니다.');return}await loadMembers();toast('계정 권한을 변경했습니다.')};
+  const removeMember=async(member:WorkspaceMember)=>{if(member.role==='owner'||!window.confirm(`“${member.display_name}” 계정을 삭제할까요?`))return;setMemberBusy(true);const {error}=await supabase.from('workspace_members').delete().eq('id',member.id);setMemberBusy(false);if(error){toast('계정을 삭제하지 못했습니다.');return}await loadMembers();toast('직원 계정을 삭제했습니다.')};
+  const roleLabel=(role:WorkspaceMember['role'])=>role==='owner'?'오너':role==='manager'?'매장 책임자':'직원';
   return (
     <>
       <ManageHead
@@ -3668,8 +4158,8 @@ function AccountSecurity({ toast }: { toast: (s: string) => void }) {
         </article>
         <article>
           <span>직원 계정</span>
-          <strong>아직 없음</strong>
-          <small>필요할 때만 추가</small>
+          <strong>{members.filter(member=>member.role!=='owner').length}명</strong>
+          <small>등록된 책임자·직원</small>
         </article>
         <article>
           <span>외부 공개</span>
@@ -3684,21 +4174,19 @@ function AccountSecurity({ toast }: { toast: (s: string) => void }) {
             <span>직원 계정은 실제 운영 범위를 확인한 뒤 추가합니다.</span>
           </div>
         </div>
+        {showMemberForm&&<div className="member-create"><label><span>이름</span><input value={memberDraft.displayName} onChange={event=>setMemberDraft({...memberDraft,displayName:event.target.value})} placeholder="예: 해율 점장"/></label><label><span>이메일</span><input type="email" value={memberDraft.email} onChange={event=>setMemberDraft({...memberDraft,email:event.target.value})} placeholder="로그인에 사용할 이메일"/></label><label><span>역할</span><select value={memberDraft.role} onChange={event=>setMemberDraft({...memberDraft,role:event.target.value as 'manager'|'staff'})}><option value="manager">매장 책임자</option><option value="staff">직원</option></select></label><label><span>담당 매장</span><select value={memberDraft.storeScope} onChange={event=>setMemberDraft({...memberDraft,storeScope:event.target.value as StoreScope})}><option>해율푸드 전체</option><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label><div><button className="secondary-button" onClick={()=>setShowMemberForm(false)}>취소</button><button className="primary-button" disabled={memberBusy||!memberDraft.email.trim()||!memberDraft.displayName.trim()} onClick={()=>void addMember()}>{memberBusy?'등록 중':'계정 등록'}</button></div></div>}
         <div className="role-table">
-          {rules.map(([role, scope, state]) => (
-            <div className="role-row" key={role}>
-              <div className="role-badge">{role.slice(0, 1)}</div>
+          {members.map(member => (
+            <div className="role-row member-row" key={member.id}>
+              <div className="role-badge">{member.display_name.slice(0, 1)||'직'}</div>
               <div>
-                <strong>{role}</strong>
-                <span>{scope}</span>
+                <strong>{member.display_name||roleLabel(member.role)}</strong>
+                <span>{member.email} · {member.user_id?'로그인 연결됨':'첫 로그인 대기'}</span>
               </div>
-              <span
-                className={
-                  state === '현재 사용 중' ? 'status green' : 'status amber'
-                }
-              >
-                {state}
-              </span>
+              <select aria-label={member.display_name+' 역할'} value={member.role} disabled={member.role==='owner'||memberBusy} onChange={event=>void updateMember(member,{role:event.target.value as WorkspaceMember['role']})}><option value="owner">오너</option><option value="manager">매장 책임자</option><option value="staff">직원</option></select>
+              <select aria-label={member.display_name+' 담당 매장'} value={member.store_scope} disabled={member.role==='owner'||memberBusy} onChange={event=>void updateMember(member,{store_scope:event.target.value as StoreScope})}><option>해율푸드 전체</option><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select>
+              <button className={`member-state ${member.is_active?'active':'inactive'}`} disabled={member.role==='owner'||memberBusy} onClick={()=>void updateMember(member,{is_active:!member.is_active})}>{member.is_active?'사용 중':'중지됨'}</button>
+              {member.role!=='owner'&&<button className="member-delete" disabled={memberBusy} onClick={()=>void removeMember(member)} aria-label={member.display_name+' 계정 삭제'}><Trash2 size={16}/></button>}
             </div>
           ))}
         </div>
@@ -3716,11 +4204,10 @@ function AccountSecurity({ toast }: { toast: (s: string) => void }) {
       <div className="security-actions">
         <button
           className="secondary-button"
-          onClick={() =>
-            toast('직원 역할과 담당 매장을 정한 뒤 계정을 추가할 수 있습니다.')
-          }
+          disabled={!user}
+          onClick={() => setShowMemberForm(value=>!value)}
         >
-          직원 계정 추가 준비
+          <Plus size={17}/>{showMemberForm?'입력 닫기':'직원 계정 추가'}
         </button>
         <button
           className="primary-button"
