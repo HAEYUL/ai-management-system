@@ -1168,6 +1168,7 @@ function Plans({
   const canManage=role!=='staff';
   const isOwner=role==='owner';
   const [showCreate,setShowCreate]=useState(false);
+  const [showExamples,setShowExamples]=useState(false);
   const [taskQuery,setTaskQuery]=useState('');
   const [taskStore,setTaskStore]=useState('전체 매장');
   const [taskStatus,setTaskStatus]=useState('전체 상태');
@@ -1188,6 +1189,7 @@ function Plans({
   const approveTask=(task:ExecutionTask)=>{updateTask(task.id,{status:'완료',approvedAt:new Date().toISOString(),approvedBy:actorName,reviewNote:''});appendAuditLog('과제 승인 완료',`${task.store} · ${task.title}`,actorName);toast('현장 결과를 승인하고 과제를 완료했습니다.')};
   const returnTask=(task:ExecutionTask)=>{const note=window.prompt('다시 확인할 내용을 직원에게 남겨 주세요.',task.reviewNote||'');if(note===null)return;const reviewNote=note.trim()||'결과를 보완해 다시 제출해 주세요.';updateTask(task.id,{status:'진행 중',reviewNote,approvedAt:'',approvedBy:''});appendAuditLog('과제 보완 요청',`${task.store} · ${task.title} · ${reviewNote}`,actorName);toast('과제를 보완 요청 상태로 돌렸습니다.')};
   const scopedExecutionTasks = selectedStore === '해율푸드 전체' ? executionTasks : executionTasks.filter(task => task.store === selectedStore);
+  const actualCounts={all:scopedExecutionTasks.length,decision:scopedExecutionTasks.filter(task=>task.status==='결정 필요').length,active:scopedExecutionTasks.filter(task=>task.status==='진행 중').length,review:scopedExecutionTasks.filter(task=>task.status==='결과 확인').length,done:scopedExecutionTasks.filter(task=>task.status==='완료').length};
   const visibleTasks=scopedExecutionTasks.filter(task=>{const query=taskQuery.trim().toLowerCase();const matchesQuery=!query||[task.title,task.store,task.area,task.owner,task.instruction,task.fieldNote].some(value=>value.toLowerCase().includes(query));return matchesQuery&&(taskStore==='전체 매장'||task.store===taskStore)&&(taskStatus==='전체 상태'||task.status===taskStatus)});
   useEffect(()=>{if(!focusedTaskId)return;const task=scopedExecutionTasks.find(item=>item.id===focusedTaskId);if(task){setTaskQuery(task.title);setTaskStore(selectedStore==='해율푸드 전체'?task.store:selectedStore);setTaskStatus('전체 상태');window.setTimeout(()=>document.getElementById(`task-${task.id}`)?.scrollIntoView({behavior:'smooth',block:'center'}),50)}onTaskFocused()},[focusedTaskId,onTaskFocused,scopedExecutionTasks,selectedStore]);
   const removeTask=(task:ExecutionTask)=>{if(!window.confirm(`“${task.title}” 과제를 삭제할까요? 삭제한 과제는 백업 파일이 없으면 복구할 수 없습니다.`))return;setExecutionTasks(current=>current.filter(item=>item.id!==task.id));void supabase.from('execution_tasks').delete().eq('owner_id',workspaceOwnerId).eq('id',task.id);appendAuditLog('과제 삭제',`${task.store} · ${task.title}`,actorName);toast('과제를 삭제했습니다.')};
@@ -1210,6 +1212,9 @@ function Plans({
       {showCreate&&<section className="task-create"><div className="section-title"><div><h2>새 실행 과제</h2><span>오너가 확인한 과제만 등록하세요.</span></div></div><div className="task-create-grid"><label><span>과제명</span><input value={newTask.title} onChange={e=>setNewTask({...newTask,title:e.target.value})} placeholder="예: 평일 저녁 포장 안내" autoFocus/></label><label><span>대상 매장</span><select value={newTask.store} onChange={e=>setNewTask({...newTask,store:e.target.value})}><option>해율만두전골</option><option>곤드레밥집</option><option>정담명가</option></select></label><label><span>9단계 영역</span><select value={newTask.area} onChange={e=>setNewTask({...newTask,area:e.target.value})}>{stages.map(stage=><option key={stage}>{stage}</option>)}</select></label><label><span>확인 기한</span><input type="date" value={newTask.due} onChange={e=>setNewTask({...newTask,due:e.target.value})}/></label><label><span>담당</span><input value={newTask.owner} onChange={e=>setNewTask({...newTask,owner:e.target.value})}/></label><label><span>확인 지표</span><input value={newTask.metricName} onChange={e=>setNewTask({...newTask,metricName:e.target.value})} placeholder="예: 평일 저녁 포장 주문 수"/></label><label className="wide"><span>현장 안내</span><textarea value={newTask.instruction} onChange={e=>setNewTask({...newTask,instruction:e.target.value})} placeholder="직원이 바로 실행할 수 있도록 짧게 적어주세요."/></label><label><span>실행 전 수치</span><input value={newTask.beforeValue} onChange={e=>setNewTask({...newTask,beforeValue:e.target.value})} placeholder="예: 하루 3건"/></label><label><span>목표 수치</span><input value={newTask.targetValue} onChange={e=>setNewTask({...newTask,targetValue:e.target.value})} placeholder="예: 하루 6건"/></label></div><div className="task-create-actions"><span>기기에 저장되며 로그인 상태에서는 클라우드와 자동 동기화됩니다.</span><button className="primary-button" disabled={!newTask.title.trim()} onClick={addTask}>과제 등록</button></div></section>}
       {scopedExecutionTasks.length>0&&<section className="real-task-board">
         <div className="section-title"><div><h2>내 실행 과제</h2><span>{selectedStore} 기준 · 필요한 과제를 찾고 상태와 현장 기록을 바로 수정할 수 있습니다.</span></div><span className="draft-count">{scopedExecutionTasks.filter(task=>task.status==='완료').length}/{scopedExecutionTasks.length} 완료</span></div>
+        <div className="actual-task-tabs" aria-label="실제 과제 상태별 보기">
+          {[['전체',actualCounts.all,'전체 상태'],['결정 필요',actualCounts.decision,'결정 필요'],['진행 중',actualCounts.active,'진행 중'],['결과 확인',actualCounts.review,'결과 확인'],['완료',actualCounts.done,'완료']].map(([label,count,value])=><button key={String(label)} className={taskStatus===value?'active':''} onClick={()=>setTaskStatus(String(value))}><span>{label}</span><b>{count}</b></button>)}
+        </div>
         {isOwner&&scopedExecutionTasks.some(task=>task.status==='결과 확인')&&<div className="review-queue-banner"><div><Eye size={19}/><span><strong>오너 확인 대기 {scopedExecutionTasks.filter(task=>task.status==='결과 확인').length}건</strong><small>직원이 제출한 현장 결과를 확인하고 승인하거나 보완 요청해 주세요.</small></span></div><button onClick={()=>setTaskStatus('결과 확인')}>확인할 과제만 보기</button></div>}
         <div className="task-tools">
           <label><span>과제 검색</span><input value={taskQuery} onChange={e=>setTaskQuery(e.target.value)} placeholder="과제명, 담당, 현장 기록 검색"/></label>
@@ -1344,14 +1349,13 @@ function Plans({
           </div>
         </section>
       )}
-      <div className="filter-tabs">
-        {[`예시 과제 ${exampleTasks.length}`, `결정 필요 ${exampleCounts.decision}`, `진행 중 ${exampleCounts.active}`, `결과 확인 ${exampleCounts.review}`].map(
-          (x, i) => (
-            <button disabled className={i === 0 ? 'active' : ''} key={x}>
-              {x}
-            </button>
-          ),
-        )}
+      <section className="example-section">
+        <button className="example-toggle" onClick={()=>setShowExamples(value=>!value)} aria-expanded={showExamples}>
+          <span><b>기능 사용 예시</b><small>실제 과제가 아닌 참고 화면입니다.</small></span>
+          <span>{showExamples?'예시 접기':'예시 보기'} <ChevronDown size={17}/></span>
+        </button>
+      {showExamples&&<><div className="filter-tabs">
+        {[`참고 예시 ${exampleTasks.length}`, `결정 필요 ${exampleCounts.decision}`, `진행 중 ${exampleCounts.active}`, `결과 확인 ${exampleCounts.review}`].map((x,i)=><button disabled className={i===0?'active':''} key={x}>{x}</button>)}
       </div>
       <div className="plan-layout">
         <section className="plan-list">
@@ -1415,7 +1419,8 @@ function Plans({
             </button>
           </div>
         </section>}
-      </div>
+      </div></>}
+      </section>
     </div>
   );
 }
